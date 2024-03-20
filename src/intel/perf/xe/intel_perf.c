@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 
 #include "perf/intel_perf.h"
+#include "intel_perf_common.h"
+#include "intel/common/i915/intel_gem.h"
 
 #include "drm-uapi/xe_drm.h"
 
@@ -26,4 +28,33 @@ uint64_t xe_perf_get_oa_format(struct intel_perf_config *perf)
    fmt |= FIELD_PREP_ULL(DRM_XE_OA_FORMAT_MASK_BC_REPORT, 0);
 
    return fmt;
+}
+
+bool
+xe_oa_metrics_available(struct intel_perf_config *perf, int fd, bool use_register_snapshots)
+{
+   uint64_t invalid_config = UINT64_MAX;
+   struct drm_xe_perf_param perf_param = {
+      .perf_type = DRM_XE_PERF_TYPE_OA,
+      .perf_op = DRM_XE_PERF_OP_REMOVE_CONFIG,
+      .param = (uintptr_t)&invalid_config,
+   };
+   bool perf_oa_available = false;
+
+   perf->i915_query_supported = false;
+   perf->i915_perf_version = 0;
+
+   /* check for KMD support */
+   if (intel_ioctl(fd, DRM_IOCTL_XE_PERF, &perf_param) != 0) {
+      /* perf_stream_paranoid == 1 and not privileges */
+      if (errno == EACCES)
+         return false;
+
+      /* expected error for removing a invalid config is UINT64_MAX, return
+       * not available for anything else
+       */
+      perf_oa_available = errno == ENOENT;
+   }
+
+   return perf_oa_available;
 }
