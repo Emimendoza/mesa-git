@@ -1,0 +1,6 @@
+# initial fails
+KHR-GL46.sparse_texture2_tests.SparseTexture2Lookup,Fail
+KHR-GL46.sparse_texture2_tests.UncommittedRegionsAccess,Crash
+KHR-GL46.sparse_texture_clamp_tests.SparseTextureClampLookupResidency,Crash
+spec@arb_gpu_shader_fp64@execution@fs-function-inout-array,Crash
+

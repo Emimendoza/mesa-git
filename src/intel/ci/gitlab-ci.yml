@@ -1,6 +1,26 @@
 include:
   - local: 'src/intel/ci/gitlab-ci-inc.yml'
 
+anv-adl:
+  extends:
+    - .lava-acer-cbv514-1h-34uz-brya:x86_64
+    - .anv-test
+  variables:
+    DEQP_SUITE: anv-adl
+    VK_DRIVER: intel
+  timeout: 30m
+  parallel: 6
+
+anv-adl-full:
+  extends:
+    - anv-adl
+    - .intel-manual-rules
+  variables:
+    DEQP_SUITE: anv-adl-full
+    JOB_TIMEOUT: 90
+  timeout: 1h 40m
+  parallel: 4
+
 anv-jsl:
   extends:
     - .lava-acer-cb317-1h-c3z6-dedede:x86_64
@@ -64,6 +84,25 @@ hasvk-hsw:
   variables:
     DEQP_FRACTION: 10
 
+anv-adl-angle:
+  extends:
+    - .lava-acer-cbv514-1h-34uz-brya:x86_64
+    - .anv-test
+    - .anv-angle-test
+  variables:
+    DEQP_SUITE: anv-adl-angle
+    GPU_VERSION: angle-anv-adl
+  timeout: 30m
+
+anv-adl-angle-full:
+  extends:
+    - anv-adl-angle
+    - .intel-manual-rules
+  variables:
+    DEQP_SUITE: anv-adl-angle-full
+    JOB_TIMEOUT: 60
+  timeout: 30m
+
 anv-jsl-angle:
   extends:
     - .lava-acer-cb317-1h-c3z6-dedede:x86_64
@@ -97,6 +136,24 @@ anv-tgl-angle-full:
   variables:
     DEQP_SUITE: anv-tgl-angle-full
     JOB_TIMEOUT: 60
+
+iris-adl-deqp:
+  extends:
+    - .iris-adl-test
+    - .iris-manual-rules
+  variables:
+    DEQP_SUITE: iris-adl
+  parallel: 3
+
+iris-adl-egl:
+  extends:
+    - .iris-adl-test
+  variables:
+    PIGLIT_NO_WINDOW: 0
+    HWCI_START_XORG: 1
+    HWCI_START_WESTON: 1
+    DEQP_SUITE: iris-apl-egl
+  timeout: 30m
 
 iris-apl-deqp:
   extends:
@@ -170,6 +227,18 @@ iris-amly-egl:
     HWCI_START_WESTON: 1
     DEQP_SUITE: iris-amly-egl
 
+iris-adl-piglit:
+  extends:
+    - .iris-adl-test
+    - .lava-piglit
+  parallel: 3
+  variables:
+    HWCI_START_XORG: 1
+    PIGLIT_NO_WINDOW: 0
+    PIGLIT_PLATFORM: mixed_glx_egl
+    PIGLIT_PROFILES: gpu
+  timeout: 30m
+
 iris-kbl-piglit:
   extends:
     - .iris-kbl-test
@@ -180,6 +249,14 @@ iris-kbl-piglit:
     PIGLIT_NO_WINDOW: 0
     PIGLIT_PLATFORM: mixed_glx_egl
     PIGLIT_PROFILES: gpu
+
+.iris-adl-traces:
+  variables:
+    GPU_VERSION: intel-adl
+  extends:
+    - .iris-adl-test
+    - .iris-traces
+  timeout: 30m
 
 iris-apl-traces:
   variables:
@@ -243,6 +320,16 @@ iris-kbl-traces-performance:
     - .profile-traces
   variables:
     GPU_VERSION: intel-kbl
+
+intel-adl-skqp:
+  extends:
+    - .lava-acer-cbv514-1h-34uz-brya:x86_64
+    - .intel-adl-test
+  variables:
+    DEQP_SUITE: intel-adl-skqp
+    VK_DRIVER: intel
+    HWCI_START_XORG: 1
+  timeout: 30m
 
 intel-tgl-skqp:
   extends:
