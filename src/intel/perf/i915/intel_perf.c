@@ -18,6 +18,8 @@
 
 #include "drm-uapi/i915_drm.h"
 
+#include "perf/intel_perf_private.h"
+
 #define FILE_DEBUG_FLAG DEBUG_PERFMON
 
 uint64_t i915_perf_get_oa_format(struct intel_perf_config *perf)
@@ -216,4 +218,38 @@ i915_oa_metrics_available(struct intel_perf_config *perf, int fd, bool use_regis
    }
 
    return i915_perf_oa_available;
+}
+
+uint64_t
+i915_add_config(struct intel_perf_config *perf, int fd,
+                const struct intel_perf_registers *config,
+                const char *guid)
+{
+   struct drm_i915_perf_oa_config i915_config = { 0, };
+
+   memcpy(i915_config.uuid, guid, sizeof(i915_config.uuid));
+
+   i915_config.n_mux_regs = config->n_mux_regs;
+   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
+
+   i915_config.n_boolean_regs = config->n_b_counter_regs;
+   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
+
+   i915_config.n_flex_regs = config->n_flex_regs;
+   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
+
+   int ret = intel_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
+   return ret > 0 ? ret : 0;
+}
+
+int
+i915_remove_config(struct intel_perf_config *perf, int fd, uint64_t config_id)
+{
+   return intel_ioctl(fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config_id);
+}
+
+bool
+i915_has_dynamic_config_support(struct intel_perf_config *perf, int fd)
+{
+   return i915_remove_config(perf, fd, UINT64_MAX) < 0 && errno == ENOENT;
 }

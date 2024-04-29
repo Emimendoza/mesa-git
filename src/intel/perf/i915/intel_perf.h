@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 struct intel_perf_config;
+struct intel_perf_registers;
 struct drm_i915_perf_oa_config;
 
 uint64_t i915_perf_get_oa_format(struct intel_perf_config *perf);
@@ -21,3 +22,9 @@ int i915_perf_stream_open(struct intel_perf_config *perf_config, int drm_fd,
 struct intel_perf_registers *i915_perf_load_configurations(struct intel_perf_config *perf_cfg, int fd, const char *guid);
 
 bool i915_oa_metrics_available(struct intel_perf_config *perf, int fd, bool use_register_snapshots);
+
+bool i915_has_dynamic_config_support(struct intel_perf_config *perf, int fd);
+uint64_t i915_add_config(struct intel_perf_config *perf, int fd,
+                         const struct intel_perf_registers *config,
+                         const char *guid);
+int i915_remove_config(struct intel_perf_config *perf, int fd, uint64_t config_id);
