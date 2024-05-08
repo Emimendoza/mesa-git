@@ -41,6 +41,11 @@ xe_oa_metrics_available(struct intel_perf_config *perf, int fd, bool use_registe
    };
    bool perf_oa_available = false;
 
+   /* TODO: INTEL_PERF_FEATURE_HOLD_PREEMPTION is not yet actually supported
+    * by Xe KMD it is not even supported in i915 with GuC submission but lets
+    * fake support so ANV can use intel/perf.
+    */
+   perf->features_supported = INTEL_PERF_FEATURE_HOLD_PREEMPTION;
 
    /* check for KMD support */
    if (intel_ioctl(fd, DRM_IOCTL_XE_PERF, &perf_param) != 0) {
