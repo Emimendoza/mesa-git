@@ -41,8 +41,6 @@ xe_oa_metrics_available(struct intel_perf_config *perf, int fd, bool use_registe
    };
    bool perf_oa_available = false;
 
-   perf->i915_query_supported = false;
-   perf->i915_perf_version = 0;
 
    /* check for KMD support */
    if (intel_ioctl(fd, DRM_IOCTL_XE_PERF, &perf_param) != 0) {
