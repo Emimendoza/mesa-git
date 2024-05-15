@@ -1608,3 +1608,25 @@ intel_perf_stream_set_metrics_id(struct intel_perf_config *perf_config,
          return -1;
    }
 }
+
+/*
+ * Read perf stream samples.
+ *
+ * buffer will be filled with multiple struct intel_perf_record_header + data.
+ *
+ * Returns 0 if no sample is available, -errno value if a error happened or
+ * the number of bytes read on success.
+ */
+int
+intel_perf_stream_read_samples(struct intel_perf_config *perf_config,
+                               int perf_stream_fd, uint8_t *buffer,
+                               size_t buffer_len)
+{
+   switch (perf_config->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_perf_stream_read_samples(perf_stream_fd, buffer, buffer_len);
+   default:
+         unreachable("missing");
+         return -1;
+   }
+}

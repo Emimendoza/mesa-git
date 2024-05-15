@@ -595,6 +595,9 @@ int intel_perf_stream_set_state(struct intel_perf_config *perf_config,
                                 int perf_stream_fd, bool enable);
 int intel_perf_stream_set_metrics_id(struct intel_perf_config *perf_config,
                                      int perf_stream_fd, uint64_t metrics_set_id);
+int intel_perf_stream_read_samples(struct intel_perf_config *perf_config,
+                                   int perf_stream_fd, uint8_t *buffer,
+                                   size_t buffer_len);
 
 #ifdef __cplusplus
 } // extern "C"
