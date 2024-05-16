@@ -730,9 +730,57 @@ load_oa_metrics(struct intel_perf_config *perf, int fd,
       perf->fallback_raw_oa_metric = perf->queries[perf->n_queries - 1].oa_metrics_set_id;
 }
 
+static struct intel_perf_registers *
+local_load_configuration(struct intel_perf_config *perf_cfg, const char *guid)
+{
+   struct intel_perf_query_info *query;
+   struct intel_perf_registers *config;
+   bool found = false;
+   int i;
+
+   for (i = 0; i < perf_cfg->n_queries; i++) {
+      query = &perf_cfg->queries[i];
+
+      if (strcmp(query->guid, guid) == 0) {
+         found = true;
+         break;
+      }
+   }
+
+   if (!found)
+      return NULL;
+
+   config = rzalloc(NULL, struct intel_perf_registers);
+   if (!config)
+      return NULL;
+
+   config->n_flex_regs = query->config.n_flex_regs;
+   config->flex_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_flex_regs);
+   config->n_mux_regs = query->config.n_mux_regs;
+   config->mux_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_mux_regs);
+   config->n_b_counter_regs = query->config.n_b_counter_regs;
+   config->b_counter_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_b_counter_regs);
+
+   if (!config->flex_regs || !config->mux_regs || !config->b_counter_regs) {
+      ralloc_free(config);
+      return NULL;
+   }
+
+   memcpy((void *)config->flex_regs, query->config.flex_regs, sizeof(uint64_t) * config->n_flex_regs);
+   memcpy((void *)config->mux_regs, query->config.mux_regs, sizeof(uint64_t) * config->n_mux_regs);
+   memcpy((void *)config->b_counter_regs, query->config.b_counter_regs, sizeof(uint64_t) * config->n_b_counter_regs);
+
+   return config;
+}
+
 struct intel_perf_registers *
 intel_perf_load_configuration(struct intel_perf_config *perf_cfg, int fd, const char *guid)
 {
+   struct intel_perf_registers *ret = local_load_configuration(perf_cfg, guid);
+
+   if (ret)
+      return ret;
+
    if (!perf_cfg->i915_query_supported)
       return NULL;
 

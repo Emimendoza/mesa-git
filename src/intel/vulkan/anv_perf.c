@@ -174,7 +174,7 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       config->register_config =
          intel_perf_load_configuration(device->physical->perf, device->fd,
-                                     INTEL_PERF_QUERY_GUID_MDAPI);
+                                       INTEL_PERF_QUERY_GUID_MDAPI);
       if (!config->register_config) {
          vk_object_free(&device->vk, NULL, config);
          return VK_INCOMPLETE;
