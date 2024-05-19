@@ -712,10 +712,6 @@ const uint32_t *
 vtn_foreach_instruction(struct vtn_builder *b, const uint32_t *start,
                         const uint32_t *end, vtn_instruction_handler handler)
 {
-   b->file = NULL;
-   b->line = -1;
-   b->col = -1;
-
    const uint32_t *w = start;
    while (w < end) {
       SpvOp opcode = w[0] & SpvOpCodeMask;
@@ -748,11 +744,6 @@ vtn_foreach_instruction(struct vtn_builder *b, const uint32_t *start,
 
       w += count;
    }
-
-   b->spirv_offset = 0;
-   b->file = NULL;
-   b->line = -1;
-   b->col = -1;
 
    assert(w == end);
    return w;
@@ -5998,6 +5989,16 @@ static bool
 vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
                             const uint32_t *w, unsigned count)
 {
+   if (b->options->debug_info) {
+      nir_debug_info_instr *instr = nir_debug_info_instr_create(b->shader);
+      instr->type = nir_debug_info_src_loc;
+      instr->src_loc.file = ralloc_strdup(b->shader, b->file);
+      instr->src_loc.line = b->line;
+      instr->src_loc.column = b->col;
+      instr->src_loc.spirv_offset = b->spirv_offset;
+      nir_builder_instr_insert(&b->nb, &instr->instr);
+   }
+
    switch (opcode) {
    case SpvOpLabel:
       break;
