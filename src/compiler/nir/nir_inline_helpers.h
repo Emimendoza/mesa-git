@@ -34,6 +34,7 @@ _nir_foreach_def(nir_instr *instr, nir_foreach_def_cb cb, void *state)
 
    case nir_instr_type_call:
    case nir_instr_type_jump:
+   case nir_instr_type_debug_info:
       return true;
 
    default:
@@ -134,6 +135,7 @@ nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state)
 
    case nir_instr_type_load_const:
    case nir_instr_type_undef:
+   case nir_instr_type_debug_info:
       return true;
 
    default:
