@@ -87,6 +87,7 @@ v3d_get_device_info(int fd, struct v3d_device_info* devinfo, v3d_ioctl_fun drm_i
     }
 
    devinfo->rev = (hub_ident3.value >> 8) & 0xff;
+   devinfo->compat_rev = (hub_ident3.value >> 16) & 0xff;
 
    return true;
 }
