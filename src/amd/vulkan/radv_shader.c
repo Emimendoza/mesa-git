@@ -1191,7 +1191,6 @@ radv_replay_shader_arena_block(struct radv_device *device, const struct radv_ser
       list_addtail(&arena->list, &device->shader_arenas);
       data = arena;
    }
-   mtx_unlock(&device->shader_arena_mutex);
 
    uint32_t block_begin = src->offset;
    uint32_t block_end = src->offset + src->size;
@@ -1209,17 +1208,25 @@ radv_replay_shader_arena_block(struct radv_device *device, const struct radv_ser
          continue;
 
       /* If another allocated block overlaps the current replay block, allocation is impossible */
-      if (hole_begin > block_begin)
+      if (hole_begin > block_begin) {
+         mtx_unlock(&device->shader_arena_mutex);
          return NULL;
+      }
 
       union radv_shader_arena_block *block = insert_block(device, hole, block_begin - hole_begin, src->size, NULL);
-      if (!block)
+      if (!block) {
+         mtx_unlock(&device->shader_arena_mutex);
          return NULL;
+      }
 
       block->freelist.prev = NULL;
       block->freelist.next = ptr;
+
+      mtx_unlock(&device->shader_arena_mutex);
       return hole;
    }
+
+   mtx_unlock(&device->shader_arena_mutex);
    return NULL;
 }
 
