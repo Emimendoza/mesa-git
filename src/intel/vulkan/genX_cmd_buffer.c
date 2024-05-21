@@ -1144,7 +1144,8 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
          must_init_aux_surface = true;
 
       } else {
-         assert(isl_aux_usage_has_ccs_e(image->planes[plane].aux_usage));
+         assert(isl_aux_usage_has_ccs_e(image->planes[plane].aux_usage)
+                || image->planes[plane].aux_usage == ISL_AUX_USAGE_MC);
 
          /* We can start using the CCS immediately without ambiguating. The
           * two conditions that enable this are:

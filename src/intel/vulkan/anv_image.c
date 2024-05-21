@@ -881,9 +881,16 @@ add_aux_surface_if_supported(struct anv_device *device,
          return VK_SUCCESS;
 
       /* Choose aux usage */
-      if (anv_formats_ccs_e_compatible(device->info, image->vk.create_flags,
-                                       image->vk.format, image->vk.tiling,
-                                       image->vk.usage, fmt_list)) {
+      const struct isl_drm_modifier_info * mod_info =
+         isl_drm_modifier_get_info(image->vk.drm_format_mod);
+      if (mod_info && mod_info->supports_media_compression) {
+         image->planes[plane].aux_usage = ISL_AUX_USAGE_MC;
+      } else if (anv_formats_ccs_e_compatible(device->info,
+                                              image->vk.create_flags,
+                                              image->vk.format,
+                                              image->vk.tiling,
+                                              image->vk.usage,
+                                              fmt_list)) {
          if (intel_needs_workaround(device->info, 1607794140)) {
             /* FCV is permanently enabled on this HW. */
             image->planes[plane].aux_usage = ISL_AUX_USAGE_FCV_CCS_E;
@@ -2907,6 +2914,10 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
       case ISL_AUX_USAGE_STC_CCS:
          break;
 
+      case ISL_AUX_USAGE_MC:
+         clear_supported = false;
+         break;
+
       default:
          unreachable("Unsupported aux usage");
       }
@@ -2954,6 +2965,7 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
       }
 
    case ISL_AUX_USAGE_STC_CCS:
+   case ISL_AUX_USAGE_MC:
       assert(aux_supported);
       assert(!clear_supported);
       return ISL_AUX_STATE_COMPRESSED_NO_CLEAR;

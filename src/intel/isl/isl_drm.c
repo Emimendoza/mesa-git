@@ -199,7 +199,7 @@ isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
    if (mod_str != NULL) {
       return modifier == strtoul(mod_str, NULL, 0);
    }
-   /* FINISHME: Add gfx12 modifiers */
+
    switch (modifier) {
    default:
       return 0;
@@ -224,6 +224,11 @@ isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
          return 0;
 
       return 4;
+   case I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS:
+      if (devinfo->verx10 != 120)
+         return 0;
+
+      return 3;
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS:
       if (devinfo->verx10 != 120)
          return 0;
@@ -246,6 +251,11 @@ isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
          return 0;
 
       return 3;
+   case I915_FORMAT_MOD_4_TILED_DG2_MC_CCS:
+      if (!intel_device_info_is_dg2(devinfo))
+         return 0;
+
+      return 3;
    case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS:
       if (!intel_device_info_is_dg2(devinfo))
          return 0;
@@ -262,6 +272,11 @@ isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
          return 0;
 
       return 5;
+   case I915_FORMAT_MOD_4_TILED_MTL_MC_CCS:
+      if (!intel_device_info_is_mtl(devinfo))
+         return 0;
+
+      return 3;
    case I915_FORMAT_MOD_4_TILED_MTL_RC_CCS:
       if (!intel_device_info_is_mtl_or_arl(devinfo))
          return 0;
