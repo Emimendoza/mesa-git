@@ -1,0 +1,6 @@
+[wrap-file]
+directory = pest-2.7.6
+source_url = https://crates.io/api/v1/crates/pest/2.7.6/download
+source_filename = pest-2.7.6.tar.gz
+source_hash = 1f200d8d83c44a45b21764d1916299752ca035d15ecd46faca3e9a2a2bf6ad06
+patch_directory = pest

@@ -1,0 +1,6 @@
+[wrap-file]
+directory = pest_meta-2.7.6
+source_url = https://crates.io/api/v1/crates/pest_meta/2.7.6/download
+source_filename = pest_meta-2.7.6.tar.gz
+source_hash = a7ff62f5259e53b78d1af898941cdcdccfae7385cf7d793a6e55de5d05bb4b7d
+patch_directory = pest_meta

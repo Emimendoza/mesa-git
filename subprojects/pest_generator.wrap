@@ -1,0 +1,6 @@
+[wrap-file]
+directory = pest_generator-2.7.6
+source_url = https://crates.io/api/v1/crates/pest_generator/2.7.6/download
+source_filename = pest_generator-2.7.6.tar.gz
+source_hash = 2a31940305ffc96863a735bef7c7994a00b325a7138fdbc5bda0f1a0476d3275
+patch_directory = pest_generator

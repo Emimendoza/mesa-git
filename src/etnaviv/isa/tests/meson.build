@@ -9,5 +9,6 @@ test(
     'etnaviv_disasm', 'disasm.cpp',
     include_directories: [inc_etnaviv, inc_src],
     dependencies : [idep_gtest, idep_libetnaviv_decode],
+    link_with : [libetnaviv_parser, libetnaviv_encode],
   )
 )
