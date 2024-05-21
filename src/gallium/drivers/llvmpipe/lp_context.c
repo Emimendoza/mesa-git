@@ -256,6 +256,10 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
 
    llvmpipe_init_sampler_matrix(llvmpipe);
 
+#ifdef HAVE_LIBDRM
+   llvmpipe_init_fence_funcs(&llvmpipe->pipe);
+#endif
+
 #ifdef USE_GLOBAL_LLVM_CONTEXT
    llvmpipe->context = LLVMGetGlobalContext();
 #else
