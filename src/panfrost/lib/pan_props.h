@@ -66,6 +66,9 @@ struct panfrost_model {
    /* Default tilebuffer size in bytes for the model. */
    unsigned tilebuffer_size;
 
+   /* The GPU supports Arm Fixed-Rate Compression (AFRC) formats */
+   bool has_afrc;
+
    struct {
       /* The GPU lacks the capability for hierarchical tiling, without
        * an "Advanced Tiling Unit", instead requiring a single bin

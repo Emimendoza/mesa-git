@@ -593,6 +593,57 @@ panfrost_is_format_supported(struct pipe_screen *screen,
    return MALI_EXTRACT_INDEX(fmt.hw) && ((pan_bind_flags & ~fmt.bind) == 0);
 }
 
+static void
+panfrost_query_compression_rates(struct pipe_screen *screen,
+                                 enum pipe_format format, int max,
+                                 uint32_t *rates, int *count)
+{
+   struct panfrost_device *dev = pan_device(screen);
+
+   *count = panfrost_afrc_query_rates(dev->model, format, max, rates);
+}
+
+static void
+panfrost_query_compression_modifiers(struct pipe_screen *screen,
+                                     enum pipe_format format, uint32_t rate,
+                                     int max, uint64_t *modifiers, int *count)
+{
+   struct panfrost_device *dev = pan_device(screen);
+   const struct panfrost_model *model = dev->model;
+
+   if (rate == PIPE_COMPRESSION_FIXED_RATE_NONE) {
+      int mod_count = 0;
+      for (unsigned i = 0; i < PAN_MODIFIER_COUNT; ++i) {
+         if (drm_is_afrc(pan_best_modifiers[i]))
+            continue;
+         if (mod_count < max)
+            modifiers[mod_count] = pan_best_modifiers[i];
+         mod_count++;
+         if (max > 0 && mod_count >= max)
+            break;
+      }
+      *count = mod_count;
+      return;
+   }
+
+   *count = panfrost_afrc_get_modifiers(model, format, rate, max, modifiers);
+}
+
+static bool
+panfrost_is_compression_modifier(struct pipe_screen *screen,
+                                 enum pipe_format format, uint64_t modifier,
+                                 uint32_t *rate)
+{
+   struct panfrost_device *dev = pan_device(screen);
+   const struct panfrost_model *model = dev->model;
+   uint32_t compression_rate = panfrost_afrc_get_rate(model, format, modifier);
+
+   if (rate)
+      *rate = compression_rate;
+
+   return (compression_rate != 0);
+}
+
 /* We always support linear and tiled operations, both external and internal.
  * We support AFBC for a subset of formats, and colourspace transform for a
  * subset of those. */
@@ -609,6 +660,7 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
       dev->has_afbc && panfrost_format_supports_afbc(dev->arch, format);
    bool ytr = panfrost_afbc_can_ytr(format);
    bool tiled_afbc = panfrost_afbc_can_tile(dev->arch);
+   bool afrc = panfrost_format_supports_afrc(dev->model, format);
 
    unsigned count = 0;
 
@@ -620,6 +672,9 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
          continue;
 
       if ((pan_best_modifiers[i] & AFBC_FORMAT_MOD_TILED) && !tiled_afbc)
+         continue;
+
+      if (drm_is_afrc(pan_best_modifiers[i]) && !afrc)
          continue;
 
       if (test_modifier != DRM_FORMAT_MOD_INVALID &&
@@ -853,6 +908,17 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
       screen->force_afbc_packing = driQueryOptionb(config->options,
                                                    "pan_force_afbc_packing");
 
+   const char *option = debug_get_option("PAN_AFRC_RATE", NULL);
+   if (!option) {
+      screen->force_afrc_rate = -1;
+   } else if (strcmp(option, "default") == 0) {
+      screen->force_afrc_rate = PIPE_COMPRESSION_FIXED_RATE_DEFAULT;
+   } else {
+      int64_t rate =
+         debug_parse_num_option(option, PIPE_COMPRESSION_FIXED_RATE_NONE);
+      screen->force_afrc_rate = rate;
+   }
+
    screen->csf_tiler_heap.chunk_size = driQueryOptioni(config->options,
                                                        "pan_csf_chunk_size");
    screen->csf_tiler_heap.initial_chunks = driQueryOptioni(config->options,
@@ -885,6 +951,10 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
    screen->base.fence_finish = panfrost_fence_finish;
    screen->base.fence_get_fd = panfrost_fence_get_fd;
    screen->base.set_damage_region = panfrost_resource_set_damage_region;
+   screen->base.query_compression_rates = panfrost_query_compression_rates;
+   screen->base.query_compression_modifiers =
+      panfrost_query_compression_modifiers;
+   screen->base.is_compression_modifier = panfrost_is_compression_modifier;
 
    panfrost_resource_screen_init(&screen->base);
    pan_blend_shader_cache_init(&dev->blend_shaders,
