@@ -39,6 +39,7 @@
 
 #include <stdint.h>
 #include <math.h>
+#include "u_math.h"
 
 extern const float
 util_format_srgb_8unorm_to_linear_float_table[256];
@@ -91,10 +92,7 @@ util_format_linear_float_to_srgb_8unorm(float x)
     * This is taken from https://gist.github.com/rygorous/2203834
     * Use LUT and do linear interpolation.
     */
-   union {
-      uint32_t ui;
-      float f;
-   } almostone, minval, f;
+   union fi almostone, minval, f;
    unsigned tab, bias, scale, t;
 
    almostone.ui = 0x3f7fffff;
