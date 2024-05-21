@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
+#include <set>
 #include <vector>
 
 namespace aco {
@@ -461,6 +463,114 @@ struct ssa_info {
    bool is_subgroup_invocation() { return label & label_subgroup_invocation; }
 };
 
+uint32_t
+get_instr_const_offset(const aco_ptr<Instruction>& instr)
+{
+   if (instr->isSMEM())
+      return instr->operands.size() <= 1 ? 0 : instr->operands[1].constantValue();
+
+   unreachable("Unhandled instruction format.");
+}
+
+uint32_t
+get_load_source_tempid(const aco_ptr<Instruction>& instr)
+{
+   if (instr->isSMEM())
+      return instr->operands[0].tempId();
+
+   unreachable("Unhandled instruction format.");
+}
+
+uint32_t
+get_reg_offset_tempid(const aco_ptr<Instruction>& instr)
+{
+   if (instr->isSMEM())
+      return instr->operands.size() <= 2 ? 0 : instr->operands[2].tempId();
+
+   unreachable("Unhandled instruction format.");
+}
+
+bool
+get_buffer(const aco_ptr<Instruction>& instr)
+{
+   if (instr->isSMEM())
+      return instr->operands[0].bytes() == 16;
+
+   unreachable("Unhandled instruction format.");
+}
+
+struct load_range_info {
+   const uint32_t reg_offset_tempid = 0;
+   const bool buffer = false;
+
+   explicit load_range_info(const aco_ptr<Instruction>& instr)
+       : reg_offset_tempid(get_reg_offset_tempid(instr)), buffer(get_buffer(instr))
+   {}
+
+   bool operator==(const load_range_info& other) const
+   {
+      return reg_offset_tempid == other.reg_offset_tempid && buffer == other.buffer;
+   }
+
+   bool operator!=(const load_range_info& other) const { return !operator==(other); }
+};
+
+struct load_range_compare {
+   inline bool operator()(const aco_ptr<Instruction>& i1, const aco_ptr<Instruction>& i2) const
+   {
+      assert(i1 && i2);
+      assert(load_range_info(i1) == load_range_info(i2));
+      assert(get_load_source_tempid(i1) == get_load_source_tempid(i2));
+      return get_instr_const_offset(i1) < get_instr_const_offset(i2);
+   }
+};
+
+using load_range_set = std::set<std::reference_wrapper<aco_ptr<Instruction>>, load_range_compare>;
+
+struct load_range {
+   load_range_info info;
+   load_range_set set;
+
+   load_range(const load_range_info& inf) : info(inf) {}
+};
+
+using load_range_container = std::multimap<uint32_t, load_range>;
+
+struct per_block_info {
+   std::vector<aco_ptr<Instruction>> insert_before_use;
+   load_range_container s_load_ranges;
+   unsigned num_s_loadx16;
+   unsigned max_s_loadx16;
+   unsigned max_s_adjacent_dwords;
+
+   void reset(Block* b = nullptr)
+   {
+      insert_before_use.clear();
+      s_load_ranges.clear();
+      num_s_loadx16 = 0;
+
+      /* Heuristics for determining the aggressiveness of the SMEM combiner.
+       * These are here to ensure we don't increase register pressure too much.
+       */
+      max_s_loadx16 = 2;
+      max_s_adjacent_dwords = 16;
+
+      if (b) {
+         size_t num_instr = b->instructions.size();
+
+         if (num_instr >= 800) {
+            /* Very large blocks: it definitely HURTS to overdo the SMEM combining */
+            max_s_loadx16 = 0;
+            max_s_adjacent_dwords = 4;
+         } else if (num_instr >= 500) {
+            /* Middle ground: disallow 16 dword loads, but allow 8 */
+            max_s_loadx16 = 0;
+            max_s_adjacent_dwords = 8;
+         }
+      }
+   }
+};
+
 struct opt_ctx {
    Program* program;
    float_mode fp_mode;
@@ -469,6 +579,7 @@ struct opt_ctx {
    std::pair<uint32_t, Temp> last_literal;
    std::vector<mad_info> mad_infos;
    std::vector<uint16_t> uses;
+   per_block_info block_info;
 };
 
 bool
@@ -5329,6 +5440,255 @@ apply_literals(opt_ctx& ctx, aco_ptr<Instruction>& instr)
    ctx.instructions.emplace_back(std::move(instr));
 }
 
+aco_opcode
+get_combined_load_opcode(Format format, int adjacent_dwords, bool buffer)
+{
+   switch (format) {
+   case Format::SMEM:
+      switch (adjacent_dwords) {
+      case 2: return buffer ? aco_opcode::s_buffer_load_dwordx2 : aco_opcode::s_load_dwordx2;
+      case 4: return buffer ? aco_opcode::s_buffer_load_dwordx4 : aco_opcode::s_load_dwordx4;
+      case 8: return buffer ? aco_opcode::s_buffer_load_dwordx8 : aco_opcode::s_load_dwordx8;
+      case 16: return buffer ? aco_opcode::s_buffer_load_dwordx16 : aco_opcode::s_load_dwordx16;
+      default: unreachable("Invalid number of adjacent dwords for get_combined_load_opcode");
+      }
+   default: unreachable("Invalid format for get_combined_load_opcode");
+   }
+}
+
+void
+combine_loads(opt_ctx& ctx, const load_range& range, load_range_set::iterator& it,
+              unsigned adjacent_num_instr, unsigned adjacent_dwords)
+{
+   if (adjacent_num_instr <= 1)
+      return;
+
+   assert(adjacent_dwords);
+   aco_ptr<Instruction>& first_instr = (*it);
+
+   /* Limit the maximum combined adjacent dwords to not affect register pressure too much. */
+   if (ctx.block_info.max_s_adjacent_dwords >= 16)
+      ctx.block_info.max_s_adjacent_dwords =
+         ctx.block_info.num_s_loadx16 >= ctx.block_info.max_s_loadx16 ? 8 : 16;
+
+   load_range_set::iterator removed_first_it = range.set.end();
+   unsigned removed_adjacent_num_instr = 0;
+   unsigned removed_adjacent_dwords = 0;
+   unsigned next_power = util_next_power_of_two(adjacent_dwords);
+
+   /* Break up the adjacent loads into pieces suitable for combining. */
+   while ((adjacent_num_instr > 1) && ((adjacent_dwords > ctx.block_info.max_s_adjacent_dwords) ||
+                                       (adjacent_dwords != next_power))) {
+      /* Remove instructions from the end until we can combine what remains */
+      removed_first_it = std::next(it, adjacent_num_instr - 1);
+      aco_ptr<Instruction>& last_instr = (*removed_first_it);
+      adjacent_dwords -= last_instr->definitions[0].size();
+      adjacent_num_instr -= 1;
+      removed_adjacent_dwords += last_instr->definitions[0].size();
+      removed_adjacent_num_instr += 1;
+
+      next_power = util_next_power_of_two(adjacent_dwords);
+   }
+
+   if (removed_adjacent_num_instr > 1) {
+      /* When we had to break up the adjacent loads, combine the pieces separately. */
+      combine_loads(ctx, range, it, adjacent_num_instr, adjacent_dwords);
+      combine_loads(ctx, range, removed_first_it, removed_adjacent_num_instr,
+                    removed_adjacent_dwords);
+      return;
+   }
+
+   if (adjacent_num_instr <= 1)
+      return;
+   if (first_instr->format == Format::SMEM && adjacent_dwords == 16)
+      ctx.block_info.num_s_loadx16++;
+
+   assert(ctx.block_info.num_s_loadx16 <= ctx.block_info.max_s_loadx16);
+   assert(adjacent_dwords <= ctx.block_info.max_s_adjacent_dwords);
+   assert(util_is_power_of_two_nonzero(adjacent_dwords));
+
+   /* Create the combined load instruction. */
+   aco_opcode opc =
+      get_combined_load_opcode(first_instr->format, adjacent_dwords, range.info.buffer);
+   aco_ptr<Instruction> combined_instr;
+
+   switch (first_instr->format) {
+   case Format::SMEM: {
+      const RegClass rc((RegClass::RC)adjacent_dwords);
+      combined_instr.reset(create_instruction(opc, Format::SMEM, 2, 1));
+      combined_instr->definitions[0] = Definition(ctx.program->allocateId(rc), rc);
+      combined_instr->operands[0] = first_instr->operands[0];
+      combined_instr->operands[1] = first_instr->operands[1];
+      combined_instr->smem().sync.semantics = semantic_can_reorder;
+
+      ctx.uses.push_back(0);
+      ctx.info.push_back(ssa_info{});
+      break;
+   }
+   default: unreachable("Unsupported format.");
+   }
+
+   /* Create a p_split_vector which splits the loaded dwords into the regclass of the least common
+    * denominator */
+   aco_ptr<Instruction> split_vec{
+      create_instruction(aco_opcode::p_split_vector, Format::PSEUDO, 1, adjacent_num_instr)};
+   split_vec->operands[0].setTemp(combined_instr->definitions[0].getTemp());
+
+   /* Update the old load instructions.
+    * If their definition regclass matches the least common denominator, we can just get rid of
+    * them, otherwise we need to transform them into a p_create_vector.
+    */
+   for (unsigned i = 0; i < adjacent_num_instr; ++i, ++it) {
+      aco_ptr<Instruction>& instr = (*it);
+      assert(instr && instr->definitions.size() == 1);
+
+      split_vec->definitions[i] = instr->definitions[0];
+      instr.reset();
+   }
+
+   /* We need to remember to insert these instructions later.
+    * We can't insert them in this function; that would invalidate the pointers (and references) in
+    * the instructions vector.
+    */
+   ctx.block_info.insert_before_use.emplace_back(std::move(combined_instr));
+   ctx.block_info.insert_before_use.emplace_back(std::move(split_vec));
+}
+
+void
+try_combine_adjacent_loads_from_range(opt_ctx& ctx, const load_range& range)
+{
+   if (range.set.size() <= 1)
+      return;
+
+   auto start_it = range.set.begin();
+   aco_ptr<Instruction>& start_instr = (*start_it);
+   assert(start_instr->definitions.size() && start_instr->operands.size() == 2);
+   unsigned start_off = get_instr_const_offset(start_instr);
+   unsigned start_size = start_instr->definitions[0].size();
+   unsigned off = start_off;
+   unsigned size = start_size;
+   unsigned adjacent_num = 1;
+   unsigned adjacent_size = start_size;
+
+   for (auto it = std::next(start_it); it != range.set.end(); ++it) {
+      aco_ptr<Instruction>& instr = (*it);
+      assert(instr->definitions.size() && instr->operands.size() == 2);
+      unsigned curr_off = get_instr_const_offset(instr);
+      unsigned curr_size = instr->definitions[0].size();
+
+      if ((off + size * 4) != curr_off) {
+         /* Try to combine the previous adjacent loads */
+         combine_loads(ctx, range, start_it, adjacent_num, adjacent_size);
+
+         /* Reset adjacency info */
+         start_it = it;
+         start_off = off;
+         start_size = size;
+         adjacent_size = 0;
+         adjacent_num = 0;
+      }
+
+      off = curr_off;
+      size = curr_size;
+      adjacent_size += size;
+      adjacent_num++;
+   }
+
+   combine_loads(ctx, range, start_it, adjacent_num, adjacent_size);
+}
+
+void
+collect_load_ranges(opt_ctx& ctx, aco_ptr<Instruction>& instr)
+{
+   /* Ignore dead instructions and stores */
+   if (!instr || !instr->definitions.size() || is_dead(ctx.uses, instr.get()))
+      return;
+
+   /* Ignore atomics */
+   if (instr_info.is_atomic[(size_t)instr->opcode])
+      return;
+
+   load_range_container* ranges = nullptr;
+
+   switch (instr->format) {
+   case Format::SMEM: {
+      if (instr->operands.size() != 2 || !instr->definitions.size() ||
+          !instr->operands[0].isTemp() || !instr->operands[1].isConstant() ||
+          !instr->smem().sync.can_reorder() || instr->smem().dlc || instr->smem().glc ||
+          instr->smem().nv || instr->smem().disable_wqm ||
+          instr->smem().sync.semantics & semantic_acqrel)
+         return;
+
+      ranges = &ctx.block_info.s_load_ranges;
+      break;
+   }
+   default: return;
+   }
+
+   uint32_t source = get_load_source_tempid(instr);
+   load_range_info info(instr);
+
+   /* Find first load range with the specified source */
+   load_range_container::iterator it = ranges->find(source);
+   /* Find the load range whose info matches the current one */
+   while (it != ranges->end() && it->first == source && it->second.info != info)
+      it = std::next(it);
+   /* If not found, insert a new one */
+   if (it == ranges->end() || it->first != source)
+      it = ranges->emplace(source, load_range(info));
+
+   assert(it->first == source);
+   assert(it->second.info == info);
+   it->second.set.insert(instr);
+}
+
+void
+insert_new_instructions_in_block(opt_ctx& ctx, Block* block)
+{
+   /* Go through the insertable instructions backwards
+    * to ensure that the definition-usage order is correct.
+    */
+   for (auto it = ctx.block_info.insert_before_use.rbegin();
+        it != ctx.block_info.insert_before_use.rend(); ++it) {
+      aco_ptr<Instruction>& ins_instr = *it;
+
+      /* Find the first instruction that uses any of the definitions
+       * from the insertable instruction.
+       */
+      auto block_instr_it = std::find_if(
+         block->instructions.begin(), block->instructions.end(),
+         [&ins_instr](const aco_ptr<Instruction>& instr)
+         {
+            /* Ignore dead instructions. */
+            if (!instr)
+               return false;
+
+            /* If no instruction from the current block uses any definitions
+             * of the insertable instruction, insert it before p_logical_end.
+             */
+            if (instr->opcode == aco_opcode::p_logical_end)
+               return true;
+
+            /* See if any of this instruction's operands use any of
+             * the definitions of the instruction we want to insert.
+             */
+            return ins_instr->definitions.size() &&
+                   std::any_of(instr->operands.begin(), instr->operands.end(),
+                               [&ins_instr](const Operand& op)
+                               {
+                                  return op.isTemp() &&
+                                         std::any_of(ins_instr->definitions.begin(),
+                                                     ins_instr->definitions.end(),
+                                                     [&op](Definition& def)
+                                                     { return op.tempId() == def.tempId(); });
+                               });
+         });
+
+      assert(block_instr_it != block->instructions.end());
+      block->instructions.insert(block_instr_it, std::move(ins_instr));
+   }
+}
+
 void
 optimize(Program* program)
 {
@@ -5359,10 +5719,19 @@ optimize(Program* program)
    for (auto block_rit = program->blocks.rbegin(); block_rit != program->blocks.rend();
         ++block_rit) {
       Block* block = &(*block_rit);
+      ctx.block_info.reset(block);
       ctx.fp_mode = block->fp_mode;
       for (auto instr_rit = block->instructions.rbegin(); instr_rit != block->instructions.rend();
-           ++instr_rit)
+           ++instr_rit) {
          select_instruction(ctx, *instr_rit);
+         collect_load_ranges(ctx, *instr_rit);
+      }
+
+      for (auto& load_range_it : ctx.block_info.s_load_ranges) {
+         try_combine_adjacent_loads_from_range(ctx, load_range_it.second);
+      }
+
+      insert_new_instructions_in_block(ctx, block);
    }
 
    /* 5. Add literals to instructions */
