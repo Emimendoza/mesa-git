@@ -618,6 +618,7 @@ enum iris_memory_zone iris_memzone_for_address(uint64_t address);
 int iris_bufmgr_create_screen_id(struct iris_bufmgr *bufmgr);
 
 simple_mtx_t *iris_bufmgr_get_bo_deps_lock(struct iris_bufmgr *bufmgr);
+simple_mtx_t *iris_bufmgr_get_context_list_lock(struct iris_bufmgr *bufmgr);
 
 /**
  * A pool containing SAMPLER_BORDER_COLOR_STATE entries.
@@ -655,6 +656,10 @@ uint32_t iris_bufmgr_get_global_vm_id(struct iris_bufmgr *bufmgr);
 bool iris_bufmgr_use_global_vm_id(struct iris_bufmgr *bufmgr);
 struct intel_bind_timeline *iris_bufmgr_get_bind_timeline(struct iris_bufmgr *bufmgr);
 bool iris_bufmgr_compute_engine_supported(struct iris_bufmgr *bufmgr);
+bool iris_bufmgr_get_low_memory_mode(struct iris_bufmgr *bufmgr);
+void iris_bufmgr_enable_low_memory_mode(struct iris_bufmgr *bufmgr);
+
+struct list_head *iris_bufmgr_get_context_list(struct iris_bufmgr *bufmgr);
 
 enum iris_madvice {
    IRIS_MADVICE_WILL_NEED = 0,

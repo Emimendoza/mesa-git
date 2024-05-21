@@ -213,6 +213,9 @@ struct iris_bufmgr {
    struct hash_table *name_table;
    struct hash_table *handle_table;
 
+   simple_mtx_t context_list_lock;
+   struct list_head context_list;
+
    /**
     * List of BOs which we've effectively freed, but are hanging on to
     * until they're idle before closing and returning the VMA.
@@ -234,6 +237,7 @@ struct iris_bufmgr {
    bool bo_reuse:1;
    bool use_global_vm:1;
    bool compute_engine_supported:1;
+   bool low_memory_mode:1; /* Xe only */
 
    struct intel_aux_map_context *aux_map_ctx;
 
@@ -1854,6 +1858,7 @@ iris_bufmgr_destroy(struct iris_bufmgr *bufmgr)
 
    simple_mtx_destroy(&bufmgr->lock);
    simple_mtx_destroy(&bufmgr->bo_deps_lock);
+   simple_mtx_destroy(&bufmgr->context_list_lock);
 
    free(bufmgr);
 }
@@ -2312,6 +2317,9 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
    simple_mtx_init(&bufmgr->lock, mtx_plain);
    simple_mtx_init(&bufmgr->bo_deps_lock, mtx_plain);
 
+   simple_mtx_init(&bufmgr->context_list_lock, mtx_plain);
+   list_inithead(&bufmgr->context_list);
+
    list_inithead(&bufmgr->zombie_list);
 
    bufmgr->devinfo = *devinfo;
@@ -2545,6 +2553,12 @@ iris_bufmgr_get_aux_map_context(struct iris_bufmgr *bufmgr)
 }
 
 simple_mtx_t *
+iris_bufmgr_get_context_list_lock(struct iris_bufmgr *bufmgr)
+{
+   return &bufmgr->context_list_lock;
+}
+
+simple_mtx_t *
 iris_bufmgr_get_bo_deps_lock(struct iris_bufmgr *bufmgr)
 {
    return &bufmgr->bo_deps_lock;
@@ -2623,4 +2637,22 @@ struct intel_bind_timeline *
 iris_bufmgr_get_bind_timeline(struct iris_bufmgr *bufmgr)
 {
    return &bufmgr->bind_timeline;
+}
+
+struct list_head *
+iris_bufmgr_get_context_list(struct iris_bufmgr *bufmgr)
+{
+   return &bufmgr->context_list;
+}
+
+bool
+iris_bufmgr_get_low_memory_mode(struct iris_bufmgr *bufmgr)
+{
+   return bufmgr->low_memory_mode;
+}
+
+void
+iris_bufmgr_enable_low_memory_mode(struct iris_bufmgr *bufmgr)
+{
+   bufmgr->low_memory_mode = true;
 }
