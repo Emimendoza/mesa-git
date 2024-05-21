@@ -390,6 +390,9 @@ handleVASliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
    if (!context->decoder)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
 
+   if (!buf->size)
+      return VA_STATUS_ERROR_INVALID_BUFFER;
+
    format = u_reduce_video_profile(context->templat.profile);
    if (!context->desc.base.protected_playback) {
       switch (format) {

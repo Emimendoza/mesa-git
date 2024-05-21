@@ -125,6 +125,11 @@ void vlVaHandlePictureParameterBufferH264(vlVaDriver *drv, vlVaContext *context,
    for (i = 0; i < context->templat.max_references; ++i) {
       if ((h264->ReferenceFrames[i].flags & VA_PICTURE_H264_INVALID) ||
           (h264->ReferenceFrames[i].picture_id == VA_INVALID_SURFACE)) {
+         //No valid Reference Frames.
+         if (context->decoder && i == 0) {
+            return;
+         }
+
          resetReferencePictureDesc(&context->desc.h264, i);
          break;
       }
