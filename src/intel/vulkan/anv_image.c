@@ -1714,9 +1714,20 @@ anv_image_init(struct anv_device *device, struct anv_image *image,
        image->vk.tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
       isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
 
+   /* The display can support compression only on TILING_4. When an image is
+    * created without a modifier that usually specifies a tiling and seems to
+    * display (wsi), we just choose TILING_4.
+    *
+    * TODO: Specify affected GFX generations.
+    */
    const isl_tiling_flags_t isl_tiling_flags =
-      choose_isl_tiling_flags(device->info, create_info, isl_mod_info,
-                              image->vk.wsi_legacy_scanout);
+      image->vk.tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+      && image->from_wsi ?
+         ISL_TILING_4_BIT :
+         choose_isl_tiling_flags(device->info,
+                                 create_info,
+                                 isl_mod_info,
+                                 image->vk.wsi_legacy_scanout);
 
    const VkImageFormatListCreateInfo *fmt_list =
       vk_find_struct_const(pCreateInfo->pNext,
