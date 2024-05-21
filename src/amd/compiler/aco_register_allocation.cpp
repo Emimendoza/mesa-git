@@ -2089,6 +2089,7 @@ operand_can_use_reg(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr, unsign
              (reg != m0 || idx == 1 || idx == 3) && /* offset can be m0 */
              (reg != vcc || (instr->definitions.empty() && idx == 2) ||
               gfx_level >= GFX10); /* sdata can be vcc */
+   case Format::MUBUF: return idx != 2 || gfx_level < GFX12 || reg.reg() <= 0x7f;
    default:
       // TODO: there are more instructions with restrictions on registers
       return true;
