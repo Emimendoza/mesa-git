@@ -880,6 +880,14 @@ nir_parallel_copy_instr_create(nir_shader *shader)
    return instr;
 }
 
+nir_debug_info_instr *
+nir_debug_info_instr_create(nir_shader *shader)
+{
+   nir_debug_info_instr *instr = gc_alloc(shader->gctx, nir_debug_info_instr, 1);
+   instr_init(&instr->instr, nir_instr_type_debug_info);
+   return instr;
+}
+
 nir_undef_instr *
 nir_undef_instr_create(nir_shader *shader,
                        unsigned num_components,
@@ -1331,6 +1339,7 @@ nir_instr_def(nir_instr *instr)
 
    case nir_instr_type_call:
    case nir_instr_type_jump:
+   case nir_instr_type_debug_info:
       return NULL;
    }
 
