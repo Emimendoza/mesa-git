@@ -384,6 +384,18 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_graphics_stat
       NIR_PASS(_, stage->nir, radv_nir_lower_fs_intrinsics, stage, gfx_state);
    }
 
+   if (!radv_use_llvm_for_stage(device, stage->stage)) {
+      nir_opt_tid_function_options options = {
+         .use_masked_swizzle_amd = true,
+         .rotate_cluster_sizes = 64 | 32 | 16 | 8 | 4 | 2 | 1,
+         .shuffle_zero_fill_cluster_sizes = gfx_level >= GFX8 ? 16 : 0,
+         .subgroup_size = stage->info.wave_size,
+         .ballot_bit_size = stage->info.wave_size,
+         .ballot_num_comp = 1,
+      };
+      NIR_PASS(_, stage->nir, nir_opt_tid_function, &options);
+   }
+
    enum nir_lower_non_uniform_access_type lower_non_uniform_access_types =
       nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_ssbo_access | nir_lower_non_uniform_texture_access |
       nir_lower_non_uniform_image_access;

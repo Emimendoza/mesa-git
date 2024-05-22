@@ -172,6 +172,10 @@ index("unsigned", "reduction_op")
 # Cluster size for reduction operations
 index("unsigned", "cluster_size")
 
+# Requires that the operation's result is 0 if the invocation
+# shift is outside of the cluster group
+index("bool", "zero_shuffle_in")
+
 # Parameter index for a load_param intrinsic
 index("unsigned", "param_idx")
 
@@ -506,8 +510,11 @@ intrinsic("ballot_find_msb", src_comp=[4], dest_comp=1, flags=[CAN_ELIMINATE])
 # Shuffle operations from SPIR-V.
 intrinsic("shuffle", src_comp=[0, 1], dest_comp=0, bit_sizes=src0, flags=[CAN_ELIMINATE])
 intrinsic("shuffle_xor", src_comp=[0, 1], dest_comp=0, bit_sizes=src0, flags=[CAN_ELIMINATE])
-intrinsic("shuffle_up", src_comp=[0, 1], dest_comp=0, bit_sizes=src0, flags=[CAN_ELIMINATE])
-intrinsic("shuffle_down", src_comp=[0, 1], dest_comp=0, bit_sizes=src0, flags=[CAN_ELIMINATE])
+
+intrinsic("shuffle_up", src_comp=[0, 1], dest_comp=0, bit_sizes=src0,
+          indices=[CLUSTER_SIZE, ZERO_SHUFFLE_IN], flags=[CAN_ELIMINATE])
+intrinsic("shuffle_down", src_comp=[0, 1], dest_comp=0, bit_sizes=src0,
+          indices=[CLUSTER_SIZE, ZERO_SHUFFLE_IN], flags=[CAN_ELIMINATE])
 
 # Quad operations from SPIR-V.
 intrinsic("quad_broadcast", src_comp=[0, 1], dest_comp=0, bit_sizes=src0, flags=[CAN_ELIMINATE])

@@ -6468,6 +6468,20 @@ bool nir_opt_algebraic_late(nir_shader *shader);
 bool nir_opt_algebraic_distribute_src_mods(nir_shader *shader);
 bool nir_opt_constant_folding(nir_shader *shader);
 
+typedef struct nir_opt_tid_function_options {
+   bool use_masked_swizzle_amd : 1;
+   bool use_shuffle_xor : 1;
+   uint8_t rotate_cluster_sizes;
+   uint8_t shuffle_zero_fill_cluster_sizes;
+   uint8_t subgroup_size;
+   uint8_t ballot_bit_size;
+   uint8_t ballot_num_comp;
+} nir_opt_tid_function_options;
+
+bool
+nir_opt_tid_function(nir_shader *shader,
+                     const nir_opt_tid_function_options *options);
+
 /* Try to combine a and b into a.  Return true if combination was possible,
  * which will result in b being removed by the pass.  Return false if
  * combination wasn't possible.

@@ -8710,6 +8710,50 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
       set_wqm(ctx);
       break;
    }
+   case nir_intrinsic_shuffle_up:
+   case nir_intrinsic_shuffle_down: {
+      /* Only the special cases used by nir_opt_tid_function are implemented. */
+      Temp src = get_ssa_temp(ctx, instr->src[0].ssa);
+      Temp dst = get_ssa_temp(ctx, &instr->def);
+      assert(nir_intrinsic_cluster_size(instr) == 16);
+      assert(nir_src_is_const(instr->src[1]));
+      assert(ctx->program->gfx_level >= GFX8);
+
+      uint64_t delta = nir_src_as_uint(instr->src[1]);
+
+      if (delta >= 16) {
+         bld.copy(Definition(dst), Operand::zero(dst.bytes()));
+         break;
+      } else if (delta == 0) {
+         bld.copy(Definition(dst), src);
+         break;
+      }
+
+      if (instr->def.bit_size == 1)
+         src = bld.vop2_e64(aco_opcode::v_cndmask_b32, bld.def(v1), Operand::zero(),
+                            Operand::c32(-1), src);
+
+      src = as_vgpr(ctx, src);
+
+      uint16_t dpp_ctrl =
+         instr->intrinsic == nir_intrinsic_shuffle_up ? dpp_row_sr(delta) : dpp_row_sl(delta);
+
+      if (instr->def.bit_size == 1) {
+         Temp tmp = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(src.regClass()), src, dpp_ctrl);
+         bld.vopc(aco_opcode::v_cmp_lg_u32, Definition(dst), Operand::zero(), tmp);
+      } else if (instr->def.bit_size == 64) {
+         Temp lo = bld.tmp(v1), hi = bld.tmp(v1);
+         bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), src);
+         lo = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), lo, dpp_ctrl);
+         hi = bld.vop1_dpp(aco_opcode::v_mov_b32, bld.def(v1), hi, dpp_ctrl);
+         bld.pseudo(aco_opcode::p_create_vector, Definition(dst), lo, hi);
+         emit_split_vector(ctx, dst, 2);
+      } else {
+         bld.vop1_dpp(aco_opcode::v_mov_b32, Definition(dst), src, dpp_ctrl);
+      }
+      set_wqm(ctx);
+      break;
+   }
    case nir_intrinsic_quad_broadcast:
    case nir_intrinsic_quad_swap_horizontal:
    case nir_intrinsic_quad_swap_vertical:
