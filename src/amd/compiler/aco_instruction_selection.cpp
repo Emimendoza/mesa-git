@@ -169,6 +169,15 @@ emit_bpermute(isel_context* ctx, Builder& bld, Temp index, Temp data)
    if (index.regClass() == s1)
       return bld.readlane(bld.def(s1), data, index);
 
+   if ((ctx->options->gfx_level >= GFX8 && ctx->options->gfx_level <= GFX9) ||
+       (ctx->options->gfx_level >= GFX10 && (ctx->program->wave_size == 32 || ctx->program->workgroup_size <= 32))) {
+      /* GFX8-9 / GFX10+ Wave32: bpermute works normally.
+       * We can also just use this on GFX10+ when the workgroup size is <= 32.
+       */
+      Temp index_x4 = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand::c32(2u), index);
+      return bld.ds(aco_opcode::ds_bpermute_b32, bld.def(v1), index_x4, data);
+   }
+
    /* Avoid using shared VGPRs for shuffle on GFX10 when the shader consists
     * of multiple binaries, because the VGPR use is not known when choosing
     * which registers to use for the shared VGPRs.
@@ -188,7 +197,8 @@ emit_bpermute(isel_context* ctx, Builder& bld, Temp index, Temp data)
 
       return bld.pseudo(aco_opcode::p_bpermute_readlane, bld.def(v1), bld.def(bld.lm),
                         bld.def(bld.lm, vcc), index_op, input_data);
-   } else if (ctx->options->gfx_level >= GFX10 && ctx->program->wave_size == 64) {
+   } else {
+      assert(ctx->options->gfx_level >= GFX10 && ctx->program->wave_size == 64);
 
       /* GFX10 wave64 mode: emulate full-wave bpermute */
       Temp index_is_lo =
@@ -219,10 +229,6 @@ emit_bpermute(isel_context* ctx, Builder& bld, Temp index, Temp data)
                            bld.def(s1, scc), Operand(v1.as_linear()), index_x4, input_data,
                            same_half);
       }
-   } else {
-      /* GFX8-9 or GFX10 wave32: bpermute works normally */
-      Temp index_x4 = bld.vop2(aco_opcode::v_lshlrev_b32, bld.def(v1), Operand::c32(2u), index);
-      return bld.ds(aco_opcode::ds_bpermute_b32, bld.def(v1), index_x4, data);
    }
 }
 

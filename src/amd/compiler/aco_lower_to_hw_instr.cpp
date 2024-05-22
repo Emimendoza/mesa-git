@@ -547,6 +547,10 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
    assert(cluster_size == ctx->program->wave_size || op == aco_opcode::p_reduce);
    assert(cluster_size <= ctx->program->wave_size);
 
+   /* Emit simpler instruction sequence when the workgroup is small. */
+   if (ctx->program->workgroup_size <= 32)
+      cluster_size = MIN2(cluster_size, 32);
+
    Builder bld(ctx->program, &ctx->instructions);
 
    Operand identity[2];
@@ -737,7 +741,7 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
          }
          bld.sop1(Builder::s_mov, Definition(exec, bld.lm), Operand::c64(UINT64_MAX));
 
-         if (ctx->program->wave_size == 64) {
+         if (cluster_size == 64) {
             /* fill in the gap in row 2 */
             for (unsigned i = 0; i < src.size(); i++) {
                bld.readlane(Definition(PhysReg{sitmp + i}, s1), Operand(PhysReg{tmp + i}, v1),
@@ -806,7 +810,6 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
       }
       FALLTHROUGH;
    case aco_opcode::p_inclusive_scan:
-      assert(cluster_size == ctx->program->wave_size);
       if (ctx->program->gfx_level <= GFX7) {
          emit_ds_swizzle(bld, vtmp, tmp, src.size(), ds_pattern_bitmode(0x1e, 0x00, 0x00));
          bld.sop1(aco_opcode::s_mov_b32, Definition(exec_lo, s1), Operand::c32(0xAAAAAAAAu));
@@ -874,7 +877,7 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
          }
          emit_op(ctx, tmp, tmp, vtmp, PhysReg{0}, reduce_op, src.size());
 
-         if (ctx->program->wave_size == 64) {
+         if (cluster_size == 64) {
             bld.sop2(aco_opcode::s_bfm_b64, Definition(exec, s2), Operand::c32(32u),
                      Operand::c32(32u));
             for (unsigned i = 0; i < src.size(); i++)
@@ -909,7 +912,7 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
    if (dst.regClass().type() == RegType::sgpr) {
       for (unsigned k = 0; k < src.size(); k++) {
          bld.readlane(Definition(PhysReg{dst.physReg() + k}, s1), Operand(PhysReg{tmp + k}, v1),
-                      Operand::c32(ctx->program->wave_size - 1));
+                      Operand::c32(cluster_size - 1));
       }
    } else if (dst.physReg() != tmp) {
       for (unsigned k = 0; k < src.size(); k++) {
