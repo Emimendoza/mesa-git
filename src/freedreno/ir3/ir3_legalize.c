@@ -1333,6 +1333,39 @@ dbg_nop_sched(struct ir3 *ir, struct ir3_shader_variant *so)
    }
 }
 
+static void
+dbg_expand_rpt(struct ir3 *ir)
+{
+   foreach_block (block, &ir->block_list) {
+      foreach_instr_safe (instr, &block->instr_list) {
+         if (instr->repeat == 0 || instr->opc == OPC_NOP)
+            continue;
+
+         for (unsigned i = 0; i <= instr->repeat; ++i) {
+            struct ir3_instruction *rpt = ir3_instr_clone(instr);
+            ir3_instr_move_before(rpt, instr);
+            rpt->repeat = 0;
+
+            foreach_dst (dst, rpt) {
+               dst->num += i;
+               dst->wrmask = 1;
+            }
+
+            foreach_src (src, rpt) {
+               if (!(src->flags & IR3_REG_R))
+                  continue;
+
+               src->num += i;
+               src->wrmask = 1;
+               src->flags &= ~IR3_REG_R;
+            }
+         }
+
+         list_delinit(&instr->node);
+      }
+   }
+}
+
 struct ir3_helper_block_data {
    /* Whether helper invocations may be used on any path starting at the
     * beginning of the block.
@@ -1625,6 +1658,10 @@ ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary)
 
    foreach_block (block, &ir->block_list) {
       progress |= apply_fine_deriv_macro(ctx, block);
+   }
+
+   if (ir3_shader_debug & IR3_DBG_EXPANDRPT) {
+      dbg_expand_rpt(ir);
    }
 
    if (ir3_shader_debug & IR3_DBG_FULLSYNC) {

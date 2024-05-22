@@ -396,6 +396,39 @@ aggressive_coalesce_collect(struct ir3_liveness *live,
 }
 
 static void
+aggressive_coalesce_rpt(struct ir3_liveness *live,
+                        struct ir3_instruction *instr)
+{
+   if (!ir3_instr_is_first_rpt(instr))
+      return;
+
+   struct ir3_register *def = instr->dsts[0];
+   unsigned def_offset = 0;
+   unsigned src_offsets[instr->srcs_count];
+   memset(src_offsets, 0, sizeof(unsigned) * instr->srcs_count);
+
+   foreach_instr_rpt_excl (rpt, instr) {
+      if (!(rpt->dsts[0]->flags & IR3_REG_SSA))
+         continue;
+
+      def_offset += reg_elem_size(def);
+      try_merge_defs(live, def, rpt->dsts[0], def_offset);
+
+      foreach_src_n (src, src_n, instr) {
+         struct ir3_register *rpt_src = rpt->srcs[src_n];
+
+         if (!(src->flags & IR3_REG_SSA) || !(rpt_src->flags & IR3_REG_SSA))
+            continue;
+         if (src->def == rpt_src->def)
+            continue;
+
+         src_offsets[src_n] += reg_elem_size(src->def);
+         try_merge_defs(live, src->def, rpt_src->def, src_offsets[src_n]);
+      }
+   }
+}
+
+static void
 create_parallel_copy(struct ir3_block *block)
 {
    for (unsigned i = 0; i < 2; i++) {
@@ -541,7 +574,9 @@ dump_merge_sets(struct ir3 *ir)
               merge_set->alignment);
             for (unsigned j = 0; j < merge_set->regs_count; j++) {
                struct ir3_register *reg = merge_set->regs[j];
-               d("\t" SYN_SSA("ssa_%u") ":%u, offset %u",
+               const char *s = (reg->flags & IR3_REG_SHARED) ? "s" : "";
+               const char *h = (reg->flags & IR3_REG_HALF) ? "h" : "";
+               d("\t%s%s" SYN_SSA("ssa_%u") ":%u, offset %u", s, h,
                  reg->instr->serialno, reg->name, reg->merge_set_offset);
             }
 
@@ -584,6 +619,12 @@ ir3_merge_regs(struct ir3_liveness *live, struct ir3 *ir)
          default:
             break;
          }
+      }
+   }
+
+   foreach_block (block, &ir->block_list) {
+      foreach_instr (instr, &block->instr_list) {
+         aggressive_coalesce_rpt(live, instr);
       }
    }
 

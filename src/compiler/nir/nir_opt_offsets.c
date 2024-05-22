@@ -184,6 +184,7 @@ process_instr(nir_builder *b, nir_instr *instr, void *s)
 
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_uniform:
+   case nir_intrinsic_load_const_ir3:
       return try_fold_load_store(b, intrin, state, 0, state->options->uniform_max);
    case nir_intrinsic_load_ubo_vec4:
       return try_fold_load_store(b, intrin, state, 1, state->options->ubo_vec4_max);

@@ -59,49 +59,54 @@ struct intrinsic_info {
    int base_src;     /* offset which it loads/stores from */
    int deref_src;    /* deref which is loads/stores from */
    int value_src;    /* the data it is storing */
+
+   /* Number of bytes for an offset delta of 1. */
+   unsigned offset_scale;
 };
 
 static const struct intrinsic_info *
 get_info(nir_intrinsic_op op)
 {
    switch (op) {
-#define INFO(mode, op, atomic, res, base, deref, val)                                                             \
-   case nir_intrinsic_##op: {                                                                                     \
-      static const struct intrinsic_info op##_info = { mode, nir_intrinsic_##op, atomic, res, base, deref, val }; \
-      return &op##_info;                                                                                          \
+#define INFO(mode, op, atomic, res, base, deref, val, scale)                                                             \
+   case nir_intrinsic_##op: {                                                                                            \
+      static const struct intrinsic_info op##_info = { mode, nir_intrinsic_##op, atomic, res, base, deref, val, scale }; \
+      return &op##_info;                                                                                                 \
    }
-#define LOAD(mode, op, res, base, deref)       INFO(mode, load_##op, false, res, base, deref, -1)
-#define STORE(mode, op, res, base, deref, val) INFO(mode, store_##op, false, res, base, deref, val)
-#define ATOMIC(mode, type, res, base, deref, val)         \
-   INFO(mode, type##_atomic, true, res, base, deref, val) \
-   INFO(mode, type##_atomic_swap, true, res, base, deref, val)
+#define LOAD(mode, op, res, base, deref, scale)       INFO(mode, load_##op, false, res, base, deref, -1, scale)
+#define STORE(mode, op, res, base, deref, val, scale) INFO(mode, store_##op, false, res, base, deref, val, scale)
+#define ATOMIC(mode, type, res, base, deref, val, scale)         \
+   INFO(mode, type##_atomic, true, res, base, deref, val, scale) \
+   INFO(mode, type##_atomic_swap, true, res, base, deref, val, scale)
 
-      LOAD(nir_var_mem_push_const, push_constant, -1, 0, -1)
-      LOAD(nir_var_mem_ubo, ubo, 0, 1, -1)
-      LOAD(nir_var_mem_ssbo, ssbo, 0, 1, -1)
-      STORE(nir_var_mem_ssbo, ssbo, 1, 2, -1, 0)
-      LOAD(0, deref, -1, -1, 0)
-      STORE(0, deref, -1, -1, 0, 1)
-      LOAD(nir_var_mem_shared, shared, -1, 0, -1)
-      STORE(nir_var_mem_shared, shared, -1, 1, -1, 0)
-      LOAD(nir_var_mem_global, global, -1, 0, -1)
-      STORE(nir_var_mem_global, global, -1, 1, -1, 0)
-      LOAD(nir_var_mem_global, global_constant, -1, 0, -1)
-      LOAD(nir_var_mem_task_payload, task_payload, -1, 0, -1)
-      STORE(nir_var_mem_task_payload, task_payload, -1, 1, -1, 0)
-      ATOMIC(nir_var_mem_ssbo, ssbo, 0, 1, -1, 2)
-      ATOMIC(0, deref, -1, -1, 0, 1)
-      ATOMIC(nir_var_mem_shared, shared, -1, 0, -1, 1)
-      ATOMIC(nir_var_mem_global, global, -1, 0, -1, 1)
-      ATOMIC(nir_var_mem_task_payload, task_payload, -1, 0, -1, 1)
-      LOAD(nir_var_shader_temp, stack, -1, -1, -1)
-      STORE(nir_var_shader_temp, stack, -1, -1, -1, 0)
-      LOAD(nir_var_shader_temp, scratch, -1, 0, -1)
-      STORE(nir_var_shader_temp, scratch, -1, 1, -1, 0)
-      LOAD(nir_var_mem_ubo, ubo_uniform_block_intel, 0, 1, -1)
-      LOAD(nir_var_mem_ssbo, ssbo_uniform_block_intel, 0, 1, -1)
-      LOAD(nir_var_mem_shared, shared_uniform_block_intel, -1, 0, -1)
-      LOAD(nir_var_mem_global, global_constant_uniform_block_intel, -1, 0, -1)
+      LOAD(nir_var_mem_push_const, push_constant, -1, 0, -1, 1)
+      LOAD(nir_var_mem_ubo, ubo, 0, 1, -1, 1)
+      LOAD(nir_var_mem_ssbo, ssbo, 0, 1, -1, 1)
+      STORE(nir_var_mem_ssbo, ssbo, 1, 2, -1, 0, 1)
+      LOAD(0, deref, -1, -1, 0, 1)
+      STORE(0, deref, -1, -1, 0, 1, 1)
+      LOAD(nir_var_mem_shared, shared, -1, 0, -1, 1)
+      STORE(nir_var_mem_shared, shared, -1, 1, -1, 0, 1)
+      LOAD(nir_var_mem_global, global, -1, 0, -1, 1)
+      STORE(nir_var_mem_global, global, -1, 1, -1, 0, 1)
+      LOAD(nir_var_mem_global, global_constant, -1, 0, -1, 1)
+      LOAD(nir_var_mem_task_payload, task_payload, -1, 0, -1, 1)
+      STORE(nir_var_mem_task_payload, task_payload, -1, 1, -1, 0, 1)
+      ATOMIC(nir_var_mem_ssbo, ssbo, 0, 1, -1, 2, 1)
+      ATOMIC(0, deref, -1, -1, 0, 1, 1)
+      ATOMIC(nir_var_mem_shared, shared, -1, 0, -1, 1, 1)
+      ATOMIC(nir_var_mem_global, global, -1, 0, -1, 1, 1)
+      ATOMIC(nir_var_mem_task_payload, task_payload, -1, 0, -1, 1, 1)
+      LOAD(nir_var_shader_temp, stack, -1, -1, -1, 1)
+      STORE(nir_var_shader_temp, stack, -1, -1, -1, 0, 1)
+      LOAD(nir_var_shader_temp, scratch, -1, 0, -1, 1)
+      STORE(nir_var_shader_temp, scratch, -1, 1, -1, 0, 1)
+      LOAD(nir_var_mem_ubo, ubo_uniform_block_intel, 0, 1, -1, 1)
+      LOAD(nir_var_mem_ssbo, ssbo_uniform_block_intel, 0, 1, -1, 1)
+      LOAD(nir_var_mem_shared, shared_uniform_block_intel, -1, 0, -1, 1)
+      LOAD(nir_var_mem_global, global_constant_uniform_block_intel, -1, 0, -1, 1)
+      LOAD(nir_var_uniform, const_ir3, -1, 0, -1, 4)
+      STORE(nir_var_uniform, const_ir3, -1, -1, -1, 0, 4)
    default:
       break;
 #undef ATOMIC
@@ -234,6 +239,17 @@ get_bit_size(struct entry *entry)
 {
    unsigned size = entry->is_store ? entry->intrin->src[entry->info->value_src].ssa->bit_size : entry->intrin->def.bit_size;
    return size == 1 ? 32u : size;
+}
+
+static unsigned
+get_write_mask(const nir_intrinsic_instr *intrin)
+{
+   if (nir_intrinsic_has_write_mask(intrin))
+      return nir_intrinsic_write_mask(intrin);
+
+   const struct intrinsic_info *info = get_info(intrin->intrinsic);
+   assert(info->value_src >= 0);
+   return nir_component_mask(intrin->src[info->value_src].ssa->num_components);
 }
 
 /* If "def" is from an alu instruction with the opcode "op" and one of it's
@@ -634,11 +650,11 @@ new_bitsize_acceptable(struct vectorize_ctx *ctx, unsigned new_bit_size,
       if (high_size % new_bit_size != 0)
          return false;
 
-      unsigned write_mask = nir_intrinsic_write_mask(low->intrin);
+      unsigned write_mask = get_write_mask(low->intrin);
       if (!nir_component_mask_can_reinterpret(write_mask, get_bit_size(low), new_bit_size))
          return false;
 
-      write_mask = nir_intrinsic_write_mask(high->intrin);
+      write_mask = get_write_mask(high->intrin);
       if (!nir_component_mask_can_reinterpret(write_mask, get_bit_size(high), new_bit_size))
          return false;
    }
@@ -717,6 +733,7 @@ vectorize_loads(nir_builder *b, struct vectorize_ctx *ctx,
    first->intrin->num_components = new_num_components;
 
    const struct intrinsic_info *info = first->info;
+   unsigned high_start_offset = high_start / (high->info->offset_scale * 8u);
 
    /* update the offset */
    if (first != low && info->base_src >= 0) {
@@ -726,7 +743,7 @@ vectorize_loads(nir_builder *b, struct vectorize_ctx *ctx,
       b->cursor = nir_before_instr(first->instr);
 
       nir_def *new_base = first->intrin->src[info->base_src].ssa;
-      new_base = nir_iadd_imm(b, new_base, -(int)(high_start / 8u));
+      new_base = nir_iadd_imm(b, new_base, -(int)(high_start_offset));
 
       nir_src_rewrite(&first->intrin->src[info->base_src], new_base);
    }
@@ -737,7 +754,7 @@ vectorize_loads(nir_builder *b, struct vectorize_ctx *ctx,
 
       nir_deref_instr *deref = nir_src_as_deref(first->intrin->src[info->deref_src]);
       if (first != low && high_start != 0)
-         deref = subtract_deref(b, deref, high_start / 8u);
+         deref = subtract_deref(b, deref, high_start_offset);
       first->deref = cast_deref(b, new_num_components, new_bit_size, deref);
 
       nir_src_rewrite(&first->intrin->src[info->deref_src],
@@ -779,8 +796,8 @@ vectorize_stores(nir_builder *b, struct vectorize_ctx *ctx,
    b->cursor = nir_before_instr(second->instr);
 
    /* get new writemasks */
-   uint32_t low_write_mask = nir_intrinsic_write_mask(low->intrin);
-   uint32_t high_write_mask = nir_intrinsic_write_mask(high->intrin);
+   uint32_t low_write_mask = get_write_mask(low->intrin);
+   uint32_t high_write_mask = get_write_mask(high->intrin);
    low_write_mask = nir_component_mask_reinterpret(low_write_mask,
                                                    get_bit_size(low),
                                                    new_bit_size);
@@ -817,7 +834,8 @@ vectorize_stores(nir_builder *b, struct vectorize_ctx *ctx,
    nir_def *data = nir_vec(b, data_channels, new_num_components);
 
    /* update the intrinsic */
-   nir_intrinsic_set_write_mask(second->intrin, write_mask);
+   if (nir_intrinsic_has_write_mask(second->intrin))
+      nir_intrinsic_set_write_mask(second->intrin, write_mask);
    second->intrin->num_components = data->num_components;
 
    const struct intrinsic_info *info = second->info;
@@ -1088,8 +1106,8 @@ try_vectorize(nir_function_impl *impl, struct vectorize_ctx *ctx,
    if (!can_vectorize(ctx, first, second))
       return false;
 
-   uint64_t diff = high->offset_signed - low->offset_signed;
-   if (check_for_robustness(ctx, low, diff))
+   uint64_t offset_diff = high->offset_signed - low->offset_signed;
+   if (check_for_robustness(ctx, low, offset_diff))
       return false;
 
    /* don't attempt to vectorize accesses of row-major matrix columns */
@@ -1101,11 +1119,12 @@ try_vectorize(nir_function_impl *impl, struct vectorize_ctx *ctx,
    }
 
    /* gather information */
+   uint64_t offset_bits_diff = offset_diff * low->info->offset_scale * 8u;
    unsigned low_bit_size = get_bit_size(low);
    unsigned high_bit_size = get_bit_size(high);
    unsigned low_size = low->intrin->num_components * low_bit_size;
    unsigned high_size = high->intrin->num_components * high_bit_size;
-   unsigned new_size = MAX2(diff * 8u + high_size, low_size);
+   unsigned new_size = MAX2(offset_bits_diff + high_size, low_size);
 
    /* find a good bit size for the new load/store */
    unsigned new_bit_size = 0;
@@ -1133,10 +1152,10 @@ try_vectorize(nir_function_impl *impl, struct vectorize_ctx *ctx,
 
    if (first->is_store)
       vectorize_stores(&b, ctx, low, high, first, second,
-                       new_bit_size, new_num_components, diff * 8u);
+                       new_bit_size, new_num_components, offset_bits_diff);
    else
       vectorize_loads(&b, ctx, low, high, first, second,
-                      new_bit_size, new_num_components, diff * 8u);
+                      new_bit_size, new_num_components, offset_bits_diff);
 
    return true;
 }
@@ -1173,9 +1192,9 @@ try_vectorize_shared2(struct vectorize_ctx *ctx,
       return false;
 
    if (first->is_store) {
-      if (nir_intrinsic_write_mask(low->intrin) != BITFIELD_MASK(low->intrin->num_components))
+      if (get_write_mask(low->intrin) != BITFIELD_MASK(low->intrin->num_components))
          return false;
-      if (nir_intrinsic_write_mask(high->intrin) != BITFIELD_MASK(high->intrin->num_components))
+      if (get_write_mask(high->intrin) != BITFIELD_MASK(high->intrin->num_components))
          return false;
    }
 
