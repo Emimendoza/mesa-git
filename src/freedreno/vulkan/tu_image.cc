@@ -851,6 +851,11 @@ tu_BindImageMemory2(VkDevice _device,
       }
 #endif
 
+      const VkBindMemoryStatusKHR *status =
+         vk_find_struct_const(pBindInfos[i].pNext, BIND_MEMORY_STATUS_KHR);
+      if (status != NULL && status->pResult != NULL)
+         *status->pResult = VK_SUCCESS;
+
       if (mem) {
          VkResult result;
          if (vk_image_is_android_hardware_buffer(&image->vk)) {
