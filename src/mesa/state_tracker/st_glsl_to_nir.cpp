@@ -653,7 +653,7 @@ st_link_glsl_to_nir(struct gl_context *ctx,
          if (!(prev_shader->sh.LinkedTransformFeedback &&
                prev_shader->sh.LinkedTransformFeedback->NumVarying > 0))
             nir_compact_varyings(prev_shader->nir,
-                                 nir, ctx->API != API_OPENGL_COMPAT);
+                                 nir, !_mesa_is_desktop_gl_compat(ctx));
 
          if (ctx->Const.ShaderCompilerOptions[shader->Stage].NirOptions->vectorize_io)
             st_nir_vectorize_io(prev_shader->nir, nir);

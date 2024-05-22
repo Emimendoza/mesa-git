@@ -1491,7 +1491,7 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
                return;
             }
             /* check that all color buffers are the same format */
-            if (ctx->API != API_OPENGLES2 && intFormat != GL_NONE && f != intFormat) {
+            if (!_mesa_is_gles2(ctx) && intFormat != GL_NONE && f != intFormat) {
                fb->_Status = GL_FRAMEBUFFER_INCOMPLETE_FORMATS_EXT;
                fbo_incomplete(ctx, "format mismatch", -1);
                return;
@@ -2427,7 +2427,7 @@ _mesa_base_fbo_format(const struct gl_context *ctx, GLenum internalFormat)
       return _mesa_has_ARB_texture_rg(ctx) || _mesa_has_EXT_texture_norm16(ctx)
          ? GL_RED : 0;
    case GL_R8:
-      return ctx->API != API_OPENGLES && ctx->Extensions.ARB_texture_rg
+      return !_mesa_is_gles1(ctx) && ctx->Extensions.ARB_texture_rg
          ? GL_RED : 0;
    case GL_RG:
       return _mesa_has_ARB_texture_rg(ctx) ? GL_RG : 0;
@@ -2435,7 +2435,7 @@ _mesa_base_fbo_format(const struct gl_context *ctx, GLenum internalFormat)
       return _mesa_has_ARB_texture_rg(ctx) || _mesa_has_EXT_texture_norm16(ctx)
          ? GL_RG : 0;
    case GL_RG8:
-      return ctx->API != API_OPENGLES && ctx->Extensions.ARB_texture_rg
+      return !_mesa_is_gles1(ctx) && ctx->Extensions.ARB_texture_rg
          ? GL_RG : 0;
    /* signed normalized texture formats */
    case GL_R8_SNORM:
@@ -4796,9 +4796,9 @@ get_framebuffer_attachment_parameter(struct gl_context *ctx,
       }
       return;
    case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
-      if ((ctx->API != API_OPENGL_COMPAT ||
+      if ((!_mesa_is_desktop_gl_compat(ctx) ||
            !ctx->Extensions.ARB_framebuffer_object)
-          && ctx->API != API_OPENGL_CORE
+          && !_mesa_is_desktop_gl_core(ctx)
           && !_mesa_is_gles3(ctx)) {
          goto invalid_pname_enum;
       }
@@ -5225,7 +5225,7 @@ invalidate_framebuffer_storage(struct gl_context *ctx,
             /* Accumulation buffers and auxilary buffers were removed in
              * OpenGL 3.1, and they never existed in OpenGL ES.
              */
-            if (ctx->API != API_OPENGL_COMPAT)
+            if (!_mesa_is_desktop_gl_compat(ctx))
                goto invalid_enum;
             break;
          case GL_COLOR:

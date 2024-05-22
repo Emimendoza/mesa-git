@@ -1757,7 +1757,7 @@ link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
     * missing.
     */
    if (prog->NumShaders == 0) {
-      if (ctx->API != API_OPENGL_COMPAT)
+      if (!_mesa_is_desktop_gl_compat(ctx))
          linker_error(prog, "no shaders attached to the program\n");
       return;
    }
