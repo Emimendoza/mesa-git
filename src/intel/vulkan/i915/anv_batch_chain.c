@@ -413,7 +413,7 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
    if (result != VK_SUCCESS)
       return result;
 
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (device->vk.enabled_features.descriptorBuffer) {
       result = pin_state_pool(device, execbuf, &device->dynamic_state_db_pool);
       if (result != VK_SUCCESS)
          return result;

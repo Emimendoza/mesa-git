@@ -2995,7 +2995,7 @@ anv_device_init_border_colors(struct anv_device *device)
    device->border_colors =
       anv_state_pool_emit_data(&device->dynamic_state_pool,
                                sizeof(border_colors), 64, border_colors);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (device->vk.enabled_features.descriptorBuffer) {
       device->border_colors_db =
          anv_state_pool_emit_data(&device->dynamic_state_db_pool,
                                   sizeof(border_colors), 64, border_colors);
@@ -3056,7 +3056,7 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
 
    if (get_bo_from_pool(&ret_bo, &device->dynamic_state_pool.block_pool, address))
       return ret_bo;
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer &&
+   if (device->vk.enabled_features.descriptorBuffer &&
        get_bo_from_pool(&ret_bo, &device->dynamic_state_db_pool.block_pool, address))
       return ret_bo;
    if (get_bo_from_pool(&ret_bo, &device->instruction_state_pool.block_pool, address))
@@ -3497,7 +3497,7 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_general_state_pool;
 
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (device->vk.enabled_features.descriptorBuffer) {
       result = anv_state_pool_init(&device->dynamic_state_db_pool, device,
                                    &(struct anv_state_pool_params) {
                                       .name         = "dynamic pool (db)",
@@ -3519,7 +3519,7 @@ VkResult anv_CreateDevice(
                                 &device->dynamic_state_pool,
                                 MAX_CUSTOM_BORDER_COLORS,
                                 sizeof(struct gfx8_border_color), 64);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (device->vk.enabled_features.descriptorBuffer) {
       result = anv_state_reserved_array_pool_init(&device->custom_border_colors_db,
                                                   &device->dynamic_state_db_pool,
                                                   MAX_CUSTOM_BORDER_COLORS,
@@ -3629,7 +3629,7 @@ VkResult anv_CreateDevice(
          goto fail_binding_table_pool;
    }
 
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer &&
+   if (device->vk.enabled_features.descriptorBuffer &&
        device->info->verx10 >= 125) {
       /* On Gfx12.5+ because of the bindless stages (Mesh, Task, RT), the only
        * way we can wire push descriptors is through the bindless heap. This
@@ -3732,7 +3732,7 @@ VkResult anv_CreateDevice(
 
       anv_genX(device->info, init_cps_device_state)(device);
 
-      if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+      if (device->vk.enabled_features.descriptorBuffer) {
          device->cps_states_db =
             anv_state_pool_alloc(&device->dynamic_state_db_pool,
                                  device->cps_states.alloc_size, 32);
@@ -3957,7 +3957,7 @@ VkResult anv_CreateDevice(
    if (device->info->has_aux_map)
       anv_state_pool_finish(&device->aux_tt_pool);
  fail_push_descriptor_buffer_pool:
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer &&
+   if (device->vk.enabled_features.descriptorBuffer &&
        device->info->verx10 >= 125)
       anv_state_pool_finish(&device->push_descriptor_buffer_pool);
  fail_indirect_push_descriptor_pool:
@@ -3976,11 +3976,11 @@ VkResult anv_CreateDevice(
  fail_instruction_state_pool:
    anv_state_pool_finish(&device->instruction_state_pool);
  fail_reserved_array_pool:
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer)
+   if (device->vk.enabled_features.descriptorBuffer)
       anv_state_reserved_array_pool_finish(&device->custom_border_colors_db);
  fail_dynamic_state_db_pool:
    anv_state_reserved_pool_finish(&device->custom_border_colors);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer)
+   if (device->vk.enabled_features.descriptorBuffer)
       anv_state_pool_finish(&device->dynamic_state_db_pool);
  fail_dynamic_state_pool:
    anv_state_pool_finish(&device->dynamic_state_pool);
@@ -4068,7 +4068,7 @@ void anv_DestroyDevice(
                                    device->companion_rcs_cmd_pool, NULL);
    }
 
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer)
+   if (device->vk.enabled_features.descriptorBuffer)
       anv_state_reserved_array_pool_finish(&device->custom_border_colors_db);
 
 #ifdef HAVE_VALGRIND
@@ -4080,7 +4080,7 @@ void anv_DestroyDevice(
    anv_state_pool_free(&device->dynamic_state_pool, device->slice_hash);
    anv_state_pool_free(&device->dynamic_state_pool, device->cps_states);
    anv_state_pool_free(&device->dynamic_state_pool, device->breakpoint);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (device->vk.enabled_features.descriptorBuffer) {
       anv_state_pool_free(&device->dynamic_state_db_pool, device->cps_states_db);
       anv_state_pool_free(&device->dynamic_state_db_pool, device->slice_hash_db);
       anv_state_pool_free(&device->dynamic_state_db_pool, device->border_colors_db);
@@ -4109,7 +4109,7 @@ void anv_DestroyDevice(
       device->aux_map_ctx = NULL;
       anv_state_pool_finish(&device->aux_tt_pool);
    }
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer &&
+   if (device->vk.enabled_features.descriptorBuffer &&
        device->info->verx10 >= 125)
       anv_state_pool_finish(&device->push_descriptor_buffer_pool);
    if (device->physical->indirect_descriptors)
@@ -4121,7 +4121,7 @@ void anv_DestroyDevice(
    if (device->physical->indirect_descriptors)
       anv_state_pool_finish(&device->bindless_surface_state_pool);
    anv_state_pool_finish(&device->instruction_state_pool);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer)
+   if (device->vk.enabled_features.descriptorBuffer)
       anv_state_pool_finish(&device->dynamic_state_db_pool);
    anv_state_pool_finish(&device->dynamic_state_pool);
    anv_state_pool_finish(&device->general_state_pool);

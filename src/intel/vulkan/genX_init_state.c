@@ -827,7 +827,7 @@ genX(init_device_state)(struct anv_device *device)
          return res;
    }
 
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer &&
+   if (device->vk.enabled_features.descriptorBuffer &&
        device->slice_hash.alloc_size) {
       device->slice_hash_db =
          anv_state_pool_alloc(&device->dynamic_state_db_pool,
@@ -1159,7 +1159,7 @@ VkResult genX(CreateSampler)(
 
       memcpy(border_color_ptr, color.u32, sizeof(color));
 
-      if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+      if (device->vk.enabled_features.descriptorBuffer) {
          if (pCreateInfo->flags & VK_SAMPLER_CREATE_DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT) {
             const VkOpaqueCaptureDescriptorDataCreateInfoEXT *opaque_info =
                vk_find_struct_const(pCreateInfo->pNext,
@@ -1279,7 +1279,7 @@ VkResult genX(CreateSampler)(
       sampler_state.BorderColorPointer = border_color_offset;
       GENX(SAMPLER_STATE_pack)(NULL, sampler->state[p], &sampler_state);
 
-      if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
+      if (device->vk.enabled_features.descriptorBuffer) {
          sampler_state.BorderColorPointer = border_color_db_offset;
          GENX(SAMPLER_STATE_pack)(NULL, sampler->db_state[p], &sampler_state);
       }

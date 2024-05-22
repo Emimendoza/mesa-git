@@ -139,7 +139,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->state.pending_db_mode ==
        ANV_CMD_DESCRIPTOR_BUFFER_MODE_UNKNOWN) {
       cmd_buffer->state.pending_db_mode =
-         cmd_buffer->device->vk.enabled_extensions.EXT_descriptor_buffer ?
+         cmd_buffer->device->vk.enabled_features.descriptorBuffer ?
          ANV_CMD_DESCRIPTOR_BUFFER_MODE_BUFFER :
          ANV_CMD_DESCRIPTOR_BUFFER_MODE_LEGACY;
    }
@@ -2918,7 +2918,7 @@ genX(BeginCommandBuffer)(
       genX(cmd_buffer_set_protected_memory)(cmd_buffer, true);
 #endif
 
-   if (cmd_buffer->device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (cmd_buffer->device->vk.enabled_features.descriptorBuffer) {
       genX(cmd_buffer_emit_state_base_address)(cmd_buffer);
    } else {
       cmd_buffer->state.current_db_mode = ANV_CMD_DESCRIPTOR_BUFFER_MODE_LEGACY;
@@ -3384,7 +3384,7 @@ genX(CmdExecuteCommands)(
     * address.  We need to re-emit state base address for the container after
     * all of the secondaries are done.
     */
-   if (container->device->vk.enabled_extensions.EXT_descriptor_buffer) {
+   if (container->device->vk.enabled_features.descriptorBuffer) {
 #if GFX_VERx10 >= 125
       /* If the last secondary had a different mode, reemit the last pending
        * mode. Otherwise, we can do a lighter binding table pool update.
