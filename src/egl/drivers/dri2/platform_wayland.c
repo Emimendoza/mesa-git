@@ -891,6 +891,21 @@ dri2_wl_release_buffers(struct dri2_egl_surface *dri2_surf)
       dri2_egl_surface_free_local_buffers(dri2_surf);
 }
 
+/* If we're copying to a linear buffer, this doesn't need to use a modifier
+ * supported by the server. */
+static void
+create_dri_image_offscreen(struct dri2_egl_surface *dri2_surf,
+                           unsigned int dri_image_format)
+{
+   struct dri2_egl_display *dri2_dpy =
+      dri2_egl_display(dri2_surf->base.Resource.Display);
+
+   dri2_surf->back->dri_image = loader_dri_create_image(
+      dri2_dpy->dri_screen_render_gpu, dri2_dpy->image,
+      dri2_surf->base.Width, dri2_surf->base.Height, dri_image_format,
+      0, NULL, 0, NULL);
+}
+
 static void
 create_dri_image_from_dmabuf_feedback(struct dri2_egl_surface *dri2_surf,
                                       enum pipe_format pipe_format,
@@ -1156,11 +1171,15 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
    }
 
    if (dri2_surf->back->dri_image == NULL) {
-      if (dri2_surf->wl_dmabuf_feedback)
-         create_dri_image_from_dmabuf_feedback(dri2_surf, pipe_format,
-                                               use_flags);
-      if (dri2_surf->back->dri_image == NULL)
-         create_dri_image(dri2_surf, pipe_format, use_flags);
+      if (dri2_dpy->fd_render_gpu != dri2_dpy->fd_display_gpu) {
+         create_dri_image_offscreen(dri2_surf, pipe_format);
+      } else {
+         if (dri2_surf->wl_dmabuf_feedback)
+            create_dri_image_from_dmabuf_feedback(dri2_surf, pipe_format,
+                                                  use_flags);
+         if (dri2_surf->back->dri_image == NULL)
+            create_dri_image(dri2_surf, pipe_format, use_flags);
+      }
       dri2_surf->back->age = 0;
    }
 
