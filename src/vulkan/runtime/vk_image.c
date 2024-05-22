@@ -471,8 +471,17 @@ vk_image_view_init(struct vk_device *device,
                                  VK_IMAGE_ASPECT_STENCIL_BIT))
          assert(image_view->format == image->format);
 
-      if (!(image->create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT))
-         assert(image_view->format == image->format);
+      if (!(image->create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)) {
+         if (image->create_flags &
+             VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) {
+            unsigned img_blksz = vk_format_get_blocksize(image->format);
+            unsigned view_blksz = vk_format_get_blocksize(image_view->format);
+
+            assert(img_blksz == view_blksz);
+         } else {
+            assert(image_view->format == image->format);
+         }
+      }
 
       /* Restrict the format to only the planes chosen.
        *
