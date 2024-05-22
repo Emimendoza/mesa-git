@@ -40,7 +40,7 @@
 
 #include "genxml/gen_macros.h"
 
-#include "pan_afbc_cso.h"
+#include "pan_afbc_cso_genx.h"
 #include "pan_blend.h"
 #include "pan_blitter.h"
 #include "pan_bo.h"
@@ -3140,6 +3140,13 @@ panfrost_launch_afbc_shader(struct panfrost_batch *batch, void *cso,
 
    pctx->bind_compute_state(pctx, saved_cso);
    pctx->set_constant_buffer(pctx, PIPE_SHADER_COMPUTE, 0, true, &saved_const);
+}
+
+static inline struct pan_afbc_shader_data *
+panfrost_afbc_get_shaders(struct panfrost_context *ctx,
+                                struct panfrost_resource *rsrc, unsigned align)
+{
+   return GENX(panfrost_afbc_get_shaders)(ctx, rsrc, align);
 }
 
 #define LAUNCH_AFBC_SHADER(name, batch, rsrc, consts, nr_blocks)               \

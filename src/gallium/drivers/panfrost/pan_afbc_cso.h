@@ -70,11 +70,54 @@ struct panfrost_afbc_pack_info {
    uint32_t padding[3]; // FIXME
 } PACKED;
 
-void panfrost_afbc_context_init(struct panfrost_context *ctx);
-void panfrost_afbc_context_destroy(struct panfrost_context *ctx);
 
-struct pan_afbc_shader_data *
-panfrost_afbc_get_shaders(struct panfrost_context *ctx,
-                          struct panfrost_resource *rsrc, unsigned align);
+#define DEF_PER_GEN(X, ARGS)                                            \
+   void X##_v4(ARGS);                                                   \
+   void X##_v5(ARGS);                                                   \
+   void X##_v6(ARGS);                                                   \
+   void X##_v7(ARGS);                                                   \
+   void X##_v9(ARGS);                                                   \
+   void X##_v10(ARGS);                                                  \
+
+DEF_PER_GEN(panfrost_afbc_context_init, struct panfrost_context *ctx);
+DEF_PER_GEN(panfrost_afbc_context_destroy, struct panfrost_context *ctx);
+
+static inline void
+panfrost_afbc_context_init(struct panfrost_context *ctx, unsigned arch)
+{
+   if (arch == 4)
+      panfrost_afbc_context_init_v4(ctx);
+   else if (arch == 5)
+      panfrost_afbc_context_init_v5(ctx);
+   else if (arch == 6)
+      panfrost_afbc_context_init_v6(ctx);
+   else if (arch == 7)
+      panfrost_afbc_context_init_v7(ctx);
+   else if (arch == 9)
+      panfrost_afbc_context_init_v9(ctx);
+   else if (arch == 10)
+      panfrost_afbc_context_init_v10(ctx);
+   else
+      unreachable("Unhandled architecture major");
+}
+
+static inline void
+panfrost_afbc_context_destroy(struct panfrost_context *ctx, unsigned arch)
+{
+   if (arch == 4)
+      panfrost_afbc_context_destroy_v4(ctx);
+   else if (arch == 5)
+      panfrost_afbc_context_destroy_v5(ctx);
+   else if (arch == 6)
+      panfrost_afbc_context_destroy_v6(ctx);
+   else if (arch == 7)
+      panfrost_afbc_context_destroy_v7(ctx);
+   else if (arch == 9)
+      panfrost_afbc_context_destroy_v9(ctx);
+   else if (arch == 10)
+      panfrost_afbc_context_destroy_v10(ctx);
+   else
+      unreachable("Unhandled architecture major");
+}
 
 #endif
