@@ -74,7 +74,7 @@ iris_utrace_create_ts_buffer(struct u_trace_context *utctx, uint32_t size)
       iris_bo_alloc(screen->bufmgr, "utrace timestamps",
                     iris_size, 16 /* alignment */,
                     IRIS_MEMZONE_OTHER,
-                    BO_ALLOC_COHERENT | BO_ALLOC_SMEM);
+                    BO_ALLOC_SMEM);
 
    void *ptr = iris_bo_map(NULL, bo, MAP_READ | MAP_WRITE);
    memset(ptr, 0, iris_size);
