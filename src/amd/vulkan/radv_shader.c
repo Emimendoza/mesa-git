@@ -338,13 +338,13 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_shader_st
          .device = device,
          .object = stage->spirv.object,
       };
-      const struct spirv_capabilities spirv_caps =
-         vk_physical_device_get_spirv_capabilities(device->vk.physical);
+      const struct spirv_capabilities spirv_caps = vk_physical_device_get_spirv_capabilities(device->vk.physical);
       const struct spirv_to_nir_options spirv_options = {
          .amd_gcn_shader = true,
          .amd_shader_ballot = true,
          .amd_shader_explicit_vertex_parameter = true,
          .amd_trinary_minmax = true,
+         .debug_info = radv_device_fault_detection_enabled(device),
          .capabilities = &spirv_caps,
          .ubo_addr_format = nir_address_format_vec2_index_32bit_offset,
          .ssbo_addr_format = nir_address_format_vec2_index_32bit_offset,
@@ -2655,13 +2655,15 @@ static void
 radv_aco_build_shader_binary(void **bin, const struct ac_shader_config *config, const char *llvm_ir_str,
                              unsigned llvm_ir_size, const char *disasm_str, unsigned disasm_size, uint32_t *statistics,
                              uint32_t stats_size, uint32_t exec_size, const uint32_t *code, uint32_t code_dw,
-                             const struct aco_symbol *symbols, unsigned num_symbols)
+                             const struct aco_symbol *symbols, unsigned num_symbols,
+                             const struct aco_debug_info *debug_info, unsigned debug_info_count)
 {
    struct radv_shader_binary **binary = (struct radv_shader_binary **)bin;
    size_t size = llvm_ir_size;
 
    size += disasm_size;
    size += stats_size;
+   size += debug_info_count * sizeof(struct aco_debug_info);
 
    size += code_dw * sizeof(uint32_t) + sizeof(struct radv_shader_binary_legacy);
 
@@ -2695,6 +2697,14 @@ radv_aco_build_shader_binary(void **bin, const struct ac_shader_config *config, 
       memcpy((char *)legacy_binary->data + legacy_binary->stats_size + legacy_binary->code_size + llvm_ir_size,
              disasm_str, disasm_size);
    }
+
+   legacy_binary->debug_info_count = debug_info_count;
+   if (debug_info_count) {
+      memcpy((char *)legacy_binary->data + legacy_binary->stats_size + legacy_binary->code_size + llvm_ir_size +
+                disasm_size,
+             debug_info, debug_info_count * sizeof(struct aco_debug_info));
+   }
+
    *binary = (struct radv_shader_binary *)legacy_binary;
 }
 
@@ -2756,6 +2766,11 @@ radv_capture_shader_executable_info(struct radv_device *device, struct radv_shad
       shader->ir_string = bin->ir_size ? strdup((const char *)(bin->data + bin->stats_size + bin->code_size)) : NULL;
       shader->disasm_string =
          bin->disasm_size ? strdup((const char *)(bin->data + bin->stats_size + bin->code_size + bin->ir_size)) : NULL;
+      shader->debug_info = bin->debug_info_count
+                              ? mem_dup(bin->data + bin->stats_size + bin->code_size + bin->ir_size + bin->disasm_size,
+                                        bin->debug_info_count * sizeof(struct aco_debug_info))
+                              : NULL;
+      shader->debug_info_count = bin->debug_info_count;
    }
 }
 

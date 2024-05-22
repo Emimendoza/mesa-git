@@ -307,11 +307,27 @@ radv_dump_annotated_shader(const struct radv_shader *shader, gl_shader_stage sta
 
    fprintf(f, COLOR_YELLOW "%s - annotated disassembly:" COLOR_RESET "\n", radv_get_shader_name(&shader->info, stage));
 
+   struct hash_table_u64 *debug_info = _mesa_hash_table_u64_create(NULL);
+
+   for (uint32_t di_index = 0; di_index < shader->debug_info_count; di_index++) {
+      const struct aco_debug_info *info = &shader->debug_info[di_index];
+      _mesa_hash_table_u64_insert(debug_info, info->offset, (void *)info);
+   }
+
    /* Print instructions with annotations. */
    for (i = 0; i < num_inst; i++) {
       struct radv_shader_inst *inst = &instructions[i];
 
-      fprintf(f, "%s\n", inst->text);
+      fprintf(f, "%s", inst->text);
+
+      const struct aco_debug_info *info = _mesa_hash_table_u64_search(debug_info, inst->offset);
+      if (info && info->type == aco_debug_info_src_loc) {
+         fprintf(f, " // 0x%x", info->src_loc.spirv_offset);
+         if (info->src_loc.file)
+            fprintf(f, " %s:%u:%u", info->src_loc.file, info->src_loc.line, info->src_loc.column);
+      }
+
+      fprintf(f, "\n");
 
       /* Print which waves execute the instruction right now. */
       while (num_waves && start_addr + inst->offset == waves->pc) {
@@ -333,6 +349,8 @@ radv_dump_annotated_shader(const struct radv_shader *shader, gl_shader_stage sta
    }
 
    fprintf(f, "\n\n");
+
+   _mesa_hash_table_u64_destroy(debug_info);
    free(instructions);
 }
 

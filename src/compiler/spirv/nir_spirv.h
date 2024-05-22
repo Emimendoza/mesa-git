@@ -90,6 +90,9 @@ struct spirv_to_nir_options {
    /* Whether or not printf is supported */
    bool printf;
 
+   /* Whether or not the driver can consume debug information (By handling nir_debug_info_instr). */
+   bool debug_info;
+
    const struct spirv_capabilities *capabilities;
 
    /* Address format for various kinds of pointers. */

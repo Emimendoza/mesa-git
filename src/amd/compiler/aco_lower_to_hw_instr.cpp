@@ -2176,7 +2176,7 @@ lower_to_hw_instr(Program* program)
          }
 
          aco_ptr<Instruction> mov;
-         if (instr->isPseudo() && instr->opcode != aco_opcode::p_unit_test) {
+         if (instr->isPseudo() && instr->opcode != aco_opcode::p_unit_test && instr->opcode != aco_opcode::p_debug_info) {
             Pseudo_instruction* pi = &instr->pseudo();
 
             switch (instr->opcode) {

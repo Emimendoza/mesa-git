@@ -2047,6 +2047,8 @@ public:
    bool has_color_exports = false;
    bool is_prolog = false;
 
+   std::vector<aco_debug_info> debug_info;
+
    std::vector<uint8_t> constant_data;
    Temp private_segment_buffer;
    Temp scratch_offset;

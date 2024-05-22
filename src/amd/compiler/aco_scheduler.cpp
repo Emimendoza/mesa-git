@@ -22,9 +22,9 @@
 #define LDSDIR_MAX_MOVES    10
 #define LDS_MAX_MOVES       32
 /* creating clauses decreases def-use distances, so make it less aggressive the lower num_waves is */
-#define VMEM_CLAUSE_MAX_GRAB_DIST (ctx.num_waves * 2)
+#define VMEM_CLAUSE_MAX_GRAB_DIST       (ctx.num_waves * 2)
 #define VMEM_STORE_CLAUSE_MAX_GRAB_DIST (ctx.num_waves * 4)
-#define POS_EXP_MAX_MOVES         512
+#define POS_EXP_MAX_MOVES               512
 
 namespace aco {
 
@@ -728,7 +728,8 @@ schedule_SMEM(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& registe
          break;
 
       /* break when encountering another MEM instruction, logical_start or barriers */
-      if (candidate->opcode == aco_opcode::p_logical_start)
+      if (candidate->opcode == aco_opcode::p_logical_start ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
       /* only move VMEM instructions below descriptor loads. be more aggressive at higher num_waves
        * to help create more vmem clauses */
@@ -784,7 +785,8 @@ schedule_SMEM(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& registe
       assert(candidate_idx < (int)block->instructions.size());
       aco_ptr<Instruction>& candidate = block->instructions[candidate_idx];
 
-      if (candidate->opcode == aco_opcode::p_logical_end)
+      if (candidate->opcode == aco_opcode::p_logical_end ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
 
       /* check if candidate depends on current */
@@ -866,7 +868,8 @@ schedule_VMEM(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& registe
       bool is_vmem = candidate->isVMEM() || candidate->isFlatLike();
 
       /* break when encountering another VMEM instruction, logical_start or barriers */
-      if (candidate->opcode == aco_opcode::p_logical_start)
+      if (candidate->opcode == aco_opcode::p_logical_start ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
 
       /* break if we'd make the previous SMEM instruction stall */
@@ -959,7 +962,8 @@ schedule_VMEM(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& registe
       aco_ptr<Instruction>& candidate = block->instructions[candidate_idx];
       bool is_vmem = candidate->isVMEM() || candidate->isFlatLike();
 
-      if (candidate->opcode == aco_opcode::p_logical_end)
+      if (candidate->opcode == aco_opcode::p_logical_end ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
 
       /* check if candidate depends on current */
@@ -1029,7 +1033,8 @@ schedule_LDS(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& register
    for (int i = 0; k < max_moves && i < window_size; i++) {
       aco_ptr<Instruction>& candidate = block->instructions[cursor.source_idx];
       bool is_mem = candidate->isVMEM() || candidate->isFlatLike() || candidate->isSMEM();
-      if (candidate->opcode == aco_opcode::p_logical_start || is_mem)
+      if (candidate->opcode == aco_opcode::p_logical_start ||
+          candidate->opcode == aco_opcode::p_debug_info || is_mem)
          break;
 
       if (candidate->isDS() || candidate->isLDSDIR()) {
@@ -1053,7 +1058,8 @@ schedule_LDS(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& register
    for (; k < max_moves && i < window_size; i++) {
       aco_ptr<Instruction>& candidate = block->instructions[up_cursor.source_idx];
       bool is_mem = candidate->isVMEM() || candidate->isFlatLike() || candidate->isSMEM();
-      if (candidate->opcode == aco_opcode::p_logical_end || is_mem)
+      if (candidate->opcode == aco_opcode::p_logical_end ||
+          candidate->opcode == aco_opcode::p_debug_info || is_mem)
          break;
 
       /* check if candidate depends on current */
@@ -1073,7 +1079,8 @@ schedule_LDS(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& register
    for (; found_dependency && k < max_moves && i < window_size; i++) {
       aco_ptr<Instruction>& candidate = block->instructions[up_cursor.source_idx];
       bool is_mem = candidate->isVMEM() || candidate->isFlatLike() || candidate->isSMEM();
-      if (candidate->opcode == aco_opcode::p_logical_end || is_mem)
+      if (candidate->opcode == aco_opcode::p_logical_end ||
+          candidate->opcode == aco_opcode::p_debug_info || is_mem)
          break;
 
       HazardResult haz = perform_hazard_query(&hq, candidate.get(), true);
@@ -1109,7 +1116,8 @@ schedule_position_export(sched_ctx& ctx, Block* block, std::vector<RegisterDeman
       assert(candidate_idx >= 0);
       aco_ptr<Instruction>& candidate = block->instructions[candidate_idx];
 
-      if (candidate->opcode == aco_opcode::p_logical_start)
+      if (candidate->opcode == aco_opcode::p_logical_start ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
       if (candidate->isVMEM() || candidate->isSMEM() || candidate->isFlatLike())
          break;
@@ -1148,7 +1156,8 @@ schedule_VMEM_store(sched_ctx& ctx, Block* block, std::vector<RegisterDemand>& r
 
    for (int16_t k = 0; k < VMEM_STORE_CLAUSE_MAX_GRAB_DIST;) {
       aco_ptr<Instruction>& candidate = block->instructions[cursor.source_idx];
-      if (candidate->opcode == aco_opcode::p_logical_start)
+      if (candidate->opcode == aco_opcode::p_logical_start ||
+          candidate->opcode == aco_opcode::p_debug_info)
          break;
 
       if (!should_form_clause(current, candidate.get())) {

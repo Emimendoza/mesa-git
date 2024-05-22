@@ -958,7 +958,24 @@ print_stage(Stage stage, FILE* output)
 }
 
 void
-aco_print_block(enum amd_gfx_level gfx_level, const Block* block, FILE* output, unsigned flags,
+print_debug_info(const Program* program, const Instruction* instr, FILE* output)
+{
+   fprintf(output, "// ");
+
+   assert(instr->operands[0].isConstant());
+   const auto& info = program->debug_info[instr->operands[0].constantValue()];
+   switch (info.type) {
+   case aco_debug_info_src_loc:
+      fprintf(output, "0x%x %s:%u:%u", info.src_loc.spirv_offset, info.src_loc.file,
+              info.src_loc.line, info.src_loc.column);
+      break;
+   }
+
+   fprintf(output, "\n");
+}
+
+void
+aco_print_block(const Program* program, const Block* block, FILE* output, unsigned flags,
                 const live& live_vars)
 {
    fprintf(output, "BB%d\n", block->index);
@@ -985,6 +1002,10 @@ aco_print_block(enum amd_gfx_level gfx_level, const Block* block, FILE* output, 
    unsigned index = 0;
    for (auto const& instr : block->instructions) {
       fprintf(output, "\t");
+      if (instr->opcode == aco_opcode::p_debug_info) {
+         print_debug_info(program, instr.get(), output);
+         continue;
+      }
       if (flags & print_live_vars) {
          RegisterDemand demand = live_vars.register_demand[block->index][index];
          fprintf(output, "(%3u vgpr, %3u sgpr)   ", demand.vgpr, demand.sgpr);
@@ -992,7 +1013,7 @@ aco_print_block(enum amd_gfx_level gfx_level, const Block* block, FILE* output, 
       if (flags & print_perf_info)
          fprintf(output, "(%3u clk)   ", instr->pass_flags);
 
-      aco_print_instr(gfx_level, instr.get(), output, flags);
+      aco_print_instr(program->gfx_level, instr.get(), output, flags);
       fprintf(output, "\n");
       index++;
    }
@@ -1013,7 +1034,7 @@ aco_print_program(const Program* program, FILE* output, const live& live_vars, u
    print_stage(program->stage, output);
 
    for (Block const& block : program->blocks)
-      aco_print_block(program->gfx_level, &block, output, flags, live_vars);
+      aco_print_block(program, &block, output, flags, live_vars);
 
    if (program->constant_data.size()) {
       fprintf(output, "\n/* constant data */\n");

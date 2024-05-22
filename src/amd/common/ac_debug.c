@@ -282,6 +282,10 @@ ac_read_umr_register(const char **_scan, const char *name, uint32_t *value)
       return false;
 
    scan += strlen(name);
+
+   if (strncmp(scan, ": ", MIN2(strlen(scan), 2)))
+      return false;
+
    scan += strlen(": ");
 
    *value = strtoul(scan, NULL, 16);
