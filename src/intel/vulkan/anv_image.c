@@ -704,19 +704,10 @@ add_compression_control_buffer(struct anv_device *device,
 {
    assert(device->info->has_aux_map);
 
-   uint64_t ratio = intel_aux_get_main_to_aux_ratio(device->aux_map_ctx);
-   assert(image->planes[plane].primary_surface.isl.size_B % ratio == 0);
-   uint64_t size = image->planes[plane].primary_surface.isl.size_B / ratio;
-
-   /* The diagram in the Bspec section, Memory Compression - Gfx12 (44930),
-    * shows that the CCS is indexed in 256B chunks for TGL, 4K chunks for MTL.
-    * When modifiers are in use, the 4K alignment requirement of the
-    * PLANE_AUX_DIST::Auxiliary Surface Distance field must be considered
-    * (Bspec 50379). Keep things simple and just use 4K.
-    */
-   uint32_t alignment = 4096;
-
-   return image_binding_grow(device, image, binding, offset, size, alignment,
+   return image_binding_grow(device, image, binding, offset,
+                             image->planes[plane].primary_surface.isl.size_B /
+                             INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN,
+                             INTEL_AUX_MAP_META_ALIGNMENT_B,
                              &image->planes[plane].compr_ctrl_memory_range);
 }
 
@@ -2542,45 +2533,12 @@ VkResult anv_BindImageMemory2(
    return result;
 }
 
-static inline void
-get_image_fast_clear_layout(const struct anv_image *image,
-                            VkSubresourceLayout *out_layout)
-{
-   /* If the memory binding differs between primary and fast clear
-    * region, then the returned offset will be incorrect.
-    */
-   assert(image->planes[0].fast_clear_memory_range.binding ==
-          image->planes[0].primary_surface.memory_range.binding);
-   out_layout->offset = image->planes[0].fast_clear_memory_range.offset;
-   out_layout->size = image->planes[0].fast_clear_memory_range.size;
-   /* Refer to the comment above add_aux_state_tracking_buffer() for the
-    * design of fast clear region. It is not a typical isl surface, so we
-    * just push some values in these pitches when no other requirements
-    * to meet. We have some freedom to do so according to the spec of
-    * VkSubresourceLayout:
-    *
-    * If the image is non-linear, then rowPitch, arrayPitch, and depthPitch
-    * have an implementation-dependent meaning.
-    *
-    * Fast clear is neither supported on linear tiling formats nor linear
-    * modifiers, which don't have the fast clear plane. We should be safe
-    * with these values.
-    */
-   out_layout->arrayPitch = 1;
-   out_layout->depthPitch = 1;
-   /* On TGL and DG2, 64-byte alignment on clear color is required.
-    * This pitch is ignored on MTL. (drm_fourcc.h)
-    */
-   out_layout->rowPitch = 64;
-}
-
 static void
 anv_get_image_subresource_layout(const struct anv_image *image,
                                  const VkImageSubresource2KHR *subresource,
                                  VkSubresourceLayout2KHR *layout)
 {
    const struct anv_image_memory_range *mem_range;
-   const struct isl_surf *isl_surf;
 
    assert(__builtin_popcount(subresource->imageSubresource.aspectMask) == 1);
 
@@ -2620,32 +2578,65 @@ anv_get_image_subresource_layout(const struct anv_image *image,
       default:
          unreachable("bad VkImageAspectFlags");
       }
+
+      uint32_t row_pitch_B;
       if (isl_drm_modifier_plane_is_clear_color(image->vk.drm_format_mod,
                                                 mem_plane)) {
-         get_image_fast_clear_layout(image, &layout->subresourceLayout);
-
-         return;
-      } else if (mem_plane == 1 &&
-                 isl_drm_modifier_has_aux(image->vk.drm_format_mod)) {
          assert(image->n_planes == 1);
-         /* If the memory binding differs between primary and aux, then the
-          * returned offset will be incorrect.
-          */
-         mem_range = anv_image_get_aux_memory_range(image, 0);
-         assert(mem_range->binding ==
-                image->planes[0].primary_surface.memory_range.binding);
-         isl_surf = &image->planes[0].aux_surface.isl;
+
+         mem_range = &image->planes[0].fast_clear_memory_range;
+         row_pitch_B = ISL_DRM_CC_PLANE_PITCH_B;
+      } else if (mem_plane == 1 &&
+                 image->planes[0].compr_ctrl_memory_range.size > 0) {
+         assert(image->n_planes == 1);
+         assert(isl_drm_modifier_has_aux(image->vk.drm_format_mod));
+
+         mem_range = &image->planes[0].compr_ctrl_memory_range;
+         row_pitch_B = image->planes[0].primary_surface.isl.row_pitch_B /
+                       INTEL_AUX_MAP_MAIN_PITCH_SCALEDOWN;
+      } else if (mem_plane == 1 &&
+                 image->planes[0].aux_surface.memory_range.size > 0) {
+         assert(image->n_planes == 1);
+         assert(image->vk.drm_format_mod == I915_FORMAT_MOD_Y_TILED_CCS);
+
+         mem_range = &image->planes[0].aux_surface.memory_range;
+         row_pitch_B = image->planes[0].aux_surface.isl.row_pitch_B;
       } else {
          assert(mem_plane < image->n_planes);
+
          mem_range = &image->planes[mem_plane].primary_surface.memory_range;
-         isl_surf = &image->planes[mem_plane].primary_surface.isl;
+         row_pitch_B =
+            image->planes[mem_plane].primary_surface.isl.row_pitch_B;
       }
-   } else {
-      const uint32_t plane =
-         anv_image_aspect_to_plane(image, subresource->imageSubresource.aspectMask);
-      mem_range = &image->planes[plane].primary_surface.memory_range;
-      isl_surf = &image->planes[plane].primary_surface.isl;
+
+      /* If the memory binding differs between the primary plane and the
+       * specified memory plane, the returned offset will be incorrect.
+       */
+      assert(mem_range->binding ==
+             image->planes[0].primary_surface.memory_range.binding);
+
+      layout->subresourceLayout.offset = mem_range->offset;
+      layout->subresourceLayout.size = mem_range->size;
+      layout->subresourceLayout.rowPitch = row_pitch_B;
+      /* The spec for VkSubresourceLayout says,
+       *
+       *    The value of arrayPitch is undefined for images that were not
+       *    created as arrays. depthPitch is defined only for 3D images.
+       *
+       * We are working with a non-arrayed 2D image. So, we leave the
+       * remaining pitches undefined.
+       */
+      assert(image->vk.image_type == VK_IMAGE_TYPE_2D);
+      assert(image->vk.array_layers == 1);
+      return;
    }
+
+   const uint32_t plane =
+      anv_image_aspect_to_plane(image,
+                                subresource->imageSubresource.aspectMask);
+   const struct isl_surf *isl_surf =
+      &image->planes[plane].primary_surface.isl;
+   mem_range = &image->planes[plane].primary_surface.memory_range;
 
    layout->subresourceLayout.offset = mem_range->offset;
    layout->subresourceLayout.rowPitch = isl_surf->row_pitch_B;
