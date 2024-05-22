@@ -2586,6 +2586,11 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_def *src,
       nir_intrinsic_set_format(intrin, var->data.image.format);
 
    nir_intrinsic_set_access(intrin, access | var->data.access);
+
+   /* If no {src,dst}_type was specified, infer it from the variable type. */
+   if (data_type == nir_type_invalid)
+      data_type = nir_get_nir_type_for_glsl_base_type(var->type->sampled_type);
+
    if (nir_intrinsic_has_src_type(intrin))
       nir_intrinsic_set_src_type(intrin, data_type);
    if (nir_intrinsic_has_dest_type(intrin))
