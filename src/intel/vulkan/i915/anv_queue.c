@@ -38,7 +38,7 @@ anv_i915_create_engine(struct anv_device *device,
 {
    struct anv_physical_device *physical = device->physical;
    struct anv_queue_family *queue_family =
-      &physical->queue.families[pCreateInfo->queueFamilyIndex];
+      &device->queue_families->families[pCreateInfo->queueFamilyIndex];
 
    if (device->physical->engine_info == NULL) {
       switch (queue_family->engine_class) {
@@ -56,7 +56,7 @@ anv_i915_create_engine(struct anv_device *device,
          unreachable("Unsupported legacy engine");
       }
    } else if (device->physical->has_vm_control) {
-      assert(pCreateInfo->queueFamilyIndex < physical->queue.family_count);
+      assert(pCreateInfo->queueFamilyIndex < device->queue_families->family_count);
       enum intel_engine_class engine_classes[1];
       enum intel_gem_create_context_flags flags = 0;
 

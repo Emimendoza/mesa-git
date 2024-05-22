@@ -45,7 +45,9 @@ anv_wsi_get_prime_blit_queue(VkDevice _device)
 
    vk_foreach_queue(_queue, &device->vk) {
       struct anv_queue *queue = (struct anv_queue *)_queue;
-      if (queue->family->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))
+      VkQueueFlags flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+
+      if ((queue->family->queueFlags & flags) == flags)
          return vk_queue_to_handle(_queue);
    }
    return NULL;

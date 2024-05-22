@@ -958,7 +958,7 @@ struct anv_queue_family {
    enum intel_engine_class engine_class;
 };
 
-#define ANV_MAX_QUEUE_FAMILIES 5
+#define ANV_MAX_QUEUE_FAMILIES 6
 
 struct anv_memory_type {
    /* Standard bits passed on to the client */
@@ -994,6 +994,11 @@ enum anv_timestamp_capture_type {
     ANV_TIMESTAMP_CAPTURE_AT_CS_STALL,
     ANV_TIMESTAMP_REWRITE_COMPUTE_WALKER,
     ANV_TIMESTAMP_REWRITE_INDIRECT_DISPATCH,
+};
+
+struct anv_physical_device_queue_families {
+  uint32_t                                  family_count;
+  struct anv_queue_family                   families[ANV_MAX_QUEUE_FAMILIES];
 };
 
 struct anv_physical_device {
@@ -1106,10 +1111,12 @@ struct anv_physical_device {
     /** Can the platform support cooperative matrices and is it enabled? */
     bool                                        has_cooperative_matrix;
 
-    struct {
-      uint32_t                                  family_count;
-      struct anv_queue_family                   families[ANV_MAX_QUEUE_FAMILIES];
-    } queue;
+    /* Both should only directly accessed if called from Vulkan physical
+     * device functions otherwise anv_device::queue_families should be used
+     * instead.
+     */
+    struct anv_physical_device_queue_families   queue;
+    struct anv_physical_device_queue_families   queue_without_sparse_trrt;
 
     struct {
       uint32_t                                  type_count;
@@ -1890,6 +1897,7 @@ struct anv_device {
     struct anv_state                            cps_states;
     struct anv_state                            cps_states_db;
 
+    struct anv_physical_device_queue_families   *queue_families;
     uint32_t                                    queue_count;
     struct anv_queue  *                         queues;
 
@@ -2051,9 +2059,9 @@ struct anv_device {
 };
 
 static inline uint32_t
-anv_get_first_render_queue_index(struct anv_physical_device *pdevice)
+anv_get_first_render_queue_index(struct anv_device *device)
 {
-   assert(pdevice != NULL);
+   struct anv_physical_device *pdevice = device->physical;
 
    for (uint32_t i = 0; i < pdevice->queue.family_count; i++) {
       if (pdevice->queue.families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
@@ -4107,7 +4115,7 @@ static inline bool
 anv_cmd_buffer_is_render_queue(const struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_queue_family *queue_family = cmd_buffer->queue_family;
-   return (queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+   return queue_family->engine_class == INTEL_ENGINE_CLASS_RENDER;
 }
 
 static inline bool

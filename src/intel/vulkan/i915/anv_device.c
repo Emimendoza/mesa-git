@@ -282,10 +282,9 @@ anv_i915_device_setup_context(struct anv_device *device,
          const VkDeviceQueueCreateInfo *queueCreateInfo =
             &pCreateInfo->pQueueCreateInfos[i];
 
-         assert(queueCreateInfo->queueFamilyIndex <
-                physical_device->queue.family_count);
+         assert(queueCreateInfo->queueFamilyIndex < device->queue_families->family_count);
          struct anv_queue_family *queue_family =
-            &physical_device->queue.families[queueCreateInfo->queueFamilyIndex];
+            &device->queue_families->families[queueCreateInfo->queueFamilyIndex];
 
          for (uint32_t j = 0; j < queueCreateInfo->queueCount; j++)
             engine_classes[engine_count++] = queue_family->engine_class;

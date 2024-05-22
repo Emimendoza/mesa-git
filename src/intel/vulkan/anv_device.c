@@ -2162,119 +2162,155 @@ anv_override_engine_counts(int *gc_count, int *g_count, int *c_count, int *v_cou
 }
 
 static void
-anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
+init_queue_families(struct anv_physical_device *pdevice,
+                    struct anv_physical_device_queue_families *queue,
+                    bool with_sparse_trtt)
 {
-   uint32_t family_count = 0;
-   VkQueueFlags sparse_flags = pdevice->sparse_type != ANV_SPARSE_TYPE_NOT_SUPPORTED ?
-                               VK_QUEUE_SPARSE_BINDING_BIT : 0;
+   int gc_count =
+      intel_engines_count(pdevice->engine_info,
+                          INTEL_ENGINE_CLASS_RENDER);
+   int v_count =
+      intel_engines_count(pdevice->engine_info, INTEL_ENGINE_CLASS_VIDEO);
+   int g_count = 0;
+   int c_count = 0;
+   int b_count = 0;
+   const bool kernel_supports_non_render_engines = pdevice->has_vm_control;
+   const bool sparse_supports_non_render_engines =
+      pdevice->sparse_type != ANV_SPARSE_TYPE_TRTT;
+   const bool can_use_non_render_engines =
+      kernel_supports_non_render_engines &&
+      sparse_supports_non_render_engines;
    VkQueueFlags protected_flag = pdevice->has_protected_contexts ?
                                  VK_QUEUE_PROTECTED_BIT : 0;
+   enum intel_engine_class compute_class = INTEL_ENGINE_CLASS_RENDER;
+   enum intel_engine_class blit_class = INTEL_ENGINE_CLASS_COPY;
+   uint32_t family_count = 0;
 
+   c_count = intel_engines_supported_count(pdevice->local_fd,
+                                           &pdevice->info,
+                                           pdevice->engine_info,
+                                           INTEL_ENGINE_CLASS_COMPUTE);
+   if (pdevice->info.verx10 >= 125 && can_use_non_render_engines) {
+      b_count = intel_engines_supported_count(pdevice->local_fd,
+                                              &pdevice->info,
+                                              pdevice->engine_info,
+                                              INTEL_ENGINE_CLASS_COPY);
+   }
+
+   /* Only add compute only queue if HW and KMD supports compute engines
+    * TODO: also support copy, some tests fails when a transfer only queue
+    * is implemented with render engine.
+    */
+   if (c_count) {
+      if (kernel_supports_non_render_engines &&
+          (sparse_supports_non_render_engines || !with_sparse_trtt)) {
+         /* keep c_count value */
+      } else {
+         c_count = 0;
+      }
+
+      compute_class = c_count ? INTEL_ENGINE_CLASS_COMPUTE : INTEL_ENGINE_CLASS_RENDER;
+      c_count = c_count ? c_count : 1;
+   }
+
+   anv_override_engine_counts(&gc_count, &g_count, &c_count, &v_count);
+
+   if (gc_count > 0) {
+      queue->families[family_count++] = (struct anv_queue_family) {
+         .queueFlags = VK_QUEUE_GRAPHICS_BIT |
+                       VK_QUEUE_COMPUTE_BIT |
+                       VK_QUEUE_TRANSFER_BIT |
+                       protected_flag,
+         .queueCount = gc_count,
+         .engine_class = INTEL_ENGINE_CLASS_RENDER,
+      };
+      if (pdevice->sparse_type != ANV_SPARSE_TYPE_NOT_SUPPORTED) {
+         queue->families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_SPARSE_BINDING_BIT |
+                          protected_flag,
+
+            .queueCount = 1,
+            .engine_class = INTEL_ENGINE_CLASS_RENDER,
+         };
+      }
+   }
+   if (g_count > 0) {
+      queue->families[family_count++] = (struct anv_queue_family) {
+         .queueFlags = VK_QUEUE_GRAPHICS_BIT |
+                       VK_QUEUE_TRANSFER_BIT |
+                       protected_flag,
+         .queueCount = g_count,
+         .engine_class = INTEL_ENGINE_CLASS_RENDER,
+      };
+   }
+   if (c_count > 0) {
+      queue->families[family_count++] = (struct anv_queue_family) {
+         .queueFlags = VK_QUEUE_COMPUTE_BIT |
+                       VK_QUEUE_TRANSFER_BIT |
+                       protected_flag,
+         .queueCount = c_count,
+         .engine_class = compute_class,
+      };
+   }
+   if (v_count > 0 && pdevice->video_decode_enabled) {
+      /* HEVC support on Gfx9 is only available on VCS0. So limit the number of video queues
+       * to the first VCS engine instance.
+       *
+       * We should be able to query HEVC support from the kernel using the engine query uAPI,
+       * but this appears to be broken :
+       *    https://gitlab.freedesktop.org/drm/intel/-/issues/8832
+       *
+       * When this bug is fixed we should be able to check HEVC support to determine the
+       * correct number of queues.
+       */
+      /* TODO: enable protected content on video queue */
+      queue->families[family_count++] = (struct anv_queue_family) {
+         .queueFlags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
+         .queueCount = pdevice->info.ver == 9 ? MIN2(1, v_count) : v_count,
+         .engine_class = INTEL_ENGINE_CLASS_VIDEO,
+      };
+   }
+   if (b_count > 0) {
+      queue->families[family_count++] = (struct anv_queue_family) {
+         .queueFlags = VK_QUEUE_TRANSFER_BIT |
+                       protected_flag,
+         .queueCount = b_count,
+         .engine_class = blit_class,
+      };
+   }
+
+   queue->family_count = family_count;
+}
+
+static void
+anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
+{
    if (pdevice->engine_info) {
-      int gc_count =
-         intel_engines_count(pdevice->engine_info,
-                             INTEL_ENGINE_CLASS_RENDER);
-      int v_count =
-         intel_engines_count(pdevice->engine_info, INTEL_ENGINE_CLASS_VIDEO);
-      int g_count = 0;
-      int c_count = 0;
-      const bool kernel_supports_non_render_engines = pdevice->has_vm_control;
-      const bool sparse_supports_non_render_engines =
-         pdevice->sparse_type != ANV_SPARSE_TYPE_TRTT;
-      const bool can_use_non_render_engines =
-         kernel_supports_non_render_engines &&
-         sparse_supports_non_render_engines;
-
-      if (can_use_non_render_engines) {
-         c_count = intel_engines_supported_count(pdevice->local_fd,
-                                                 &pdevice->info,
-                                                 pdevice->engine_info,
-                                                 INTEL_ENGINE_CLASS_COMPUTE);
-      }
-      enum intel_engine_class compute_class =
-         c_count < 1 ? INTEL_ENGINE_CLASS_RENDER : INTEL_ENGINE_CLASS_COMPUTE;
-
-      int blit_count = 0;
-      if (pdevice->info.verx10 >= 125 && can_use_non_render_engines) {
-         blit_count = intel_engines_supported_count(pdevice->local_fd,
-                                                    &pdevice->info,
-                                                    pdevice->engine_info,
-                                                    INTEL_ENGINE_CLASS_COPY);
-      }
-
-      anv_override_engine_counts(&gc_count, &g_count, &c_count, &v_count);
-
-      if (gc_count > 0) {
-         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
-            .queueFlags = VK_QUEUE_GRAPHICS_BIT |
-                          VK_QUEUE_COMPUTE_BIT |
-                          VK_QUEUE_TRANSFER_BIT |
-                          sparse_flags |
-                          protected_flag,
-            .queueCount = gc_count,
-            .engine_class = INTEL_ENGINE_CLASS_RENDER,
-         };
-      }
-      if (g_count > 0) {
-         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
-            .queueFlags = VK_QUEUE_GRAPHICS_BIT |
-                          VK_QUEUE_TRANSFER_BIT |
-                          sparse_flags |
-                          protected_flag,
-            .queueCount = g_count,
-            .engine_class = INTEL_ENGINE_CLASS_RENDER,
-         };
-      }
-      if (c_count > 0) {
-         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
-            .queueFlags = VK_QUEUE_COMPUTE_BIT |
-                          VK_QUEUE_TRANSFER_BIT |
-                          sparse_flags |
-                          protected_flag,
-            .queueCount = c_count,
-            .engine_class = compute_class,
-         };
-      }
-      if (v_count > 0 && pdevice->video_decode_enabled) {
-         /* HEVC support on Gfx9 is only available on VCS0. So limit the number of video queues
-          * to the first VCS engine instance.
-          *
-          * We should be able to query HEVC support from the kernel using the engine query uAPI,
-          * but this appears to be broken :
-          *    https://gitlab.freedesktop.org/drm/intel/-/issues/8832
-          *
-          * When this bug is fixed we should be able to check HEVC support to determine the
-          * correct number of queues.
-          */
-         /* TODO: enable protected content on video queue */
-         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
-            .queueFlags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
-            .queueCount = pdevice->info.ver == 9 ? MIN2(1, v_count) : v_count,
-            .engine_class = INTEL_ENGINE_CLASS_VIDEO,
-         };
-      }
-      if (blit_count > 0) {
-         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
-            .queueFlags = VK_QUEUE_TRANSFER_BIT |
-                          protected_flag,
-            .queueCount = blit_count,
-            .engine_class = INTEL_ENGINE_CLASS_COPY,
-         };
-      }
+      init_queue_families(pdevice, &pdevice->queue, true);
+      init_queue_families(pdevice, &pdevice->queue_without_sparse_trrt, false);
+      assert(pdevice->queue.family_count == pdevice->queue_without_sparse_trrt.family_count);
    } else {
+      uint32_t family_count = 0;
+
       /* Default to a single render queue */
       pdevice->queue.families[family_count++] = (struct anv_queue_family) {
          .queueFlags = VK_QUEUE_GRAPHICS_BIT |
                        VK_QUEUE_COMPUTE_BIT |
-                       VK_QUEUE_TRANSFER_BIT |
-                       sparse_flags,
+                       VK_QUEUE_TRANSFER_BIT,
          .queueCount = 1,
          .engine_class = INTEL_ENGINE_CLASS_RENDER,
       };
-      family_count = 1;
+      if (pdevice->sparse_type != ANV_SPARSE_TYPE_NOT_SUPPORTED) {
+         pdevice->queue.families[family_count++] = (struct anv_queue_family) {
+            .queueFlags = VK_QUEUE_SPARSE_BINDING_BIT,
+            .queueCount = 1,
+            .engine_class = INTEL_ENGINE_CLASS_RENDER,
+         };
+      }
+      pdevice->queue.family_count = family_count;
+      pdevice->queue_without_sparse_trrt = pdevice->queue;
    }
-   assert(family_count <= ANV_MAX_QUEUE_FAMILIES);
-   pdevice->queue.family_count = family_count;
+   assert(pdevice->queue.family_count <= ANV_MAX_QUEUE_FAMILIES);
 }
 
 static VkResult
@@ -3315,8 +3351,32 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_alloc;
 
+   anv_device_set_physical(device, physical_device);
+   device->kmd_backend = anv_kmd_backend_get(device->info->kmd_type);
+
+   if (device->physical->sparse_type != ANV_SPARSE_TYPE_TRTT) {
+      device->queue_families = &device->physical->queue;
+   } else {
+      bool sparse_requested = false;
+
+      /* check if sparse queue was asked, if not we can enable async compute and blit */
+      for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
+         struct anv_physical_device_queue_families *queue_families = &device->physical->queue;
+         uint32_t queueFamilyIndex = pCreateInfo->pQueueCreateInfos[i].queueFamilyIndex;
+         struct anv_queue_family *queue_family = &queue_families->families[queueFamilyIndex];
+
+         if (queue_family->queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) {
+            sparse_requested = true;
+            break;
+         }
+      }
+
+      device->queue_families = sparse_requested ? &device->physical->queue :
+                                                  &device->physical->queue_without_sparse_trrt;
+   }
+
    if (INTEL_DEBUG(DEBUG_BATCH | DEBUG_BATCH_STATS)) {
-      for (unsigned i = 0; i < physical_device->queue.family_count; i++) {
+      for (unsigned i = 0; i < device->queue_families->family_count; i++) {
          struct intel_batch_decode_ctx *decoder = &device->decoder[i];
 
          const unsigned decode_flags = INTEL_BATCH_DECODE_DEFAULT_FLAGS;
@@ -3328,15 +3388,12 @@ VkResult anv_CreateDevice(
                                          decode_get_bo, NULL, device);
          intel_batch_stats_reset(decoder);
 
-         decoder->engine = physical_device->queue.families[i].engine_class;
+         decoder->engine = device->queue_families->families[i].engine_class;
          decoder->dynamic_base = physical_device->va.dynamic_state_pool.addr;
          decoder->surface_base = physical_device->va.internal_surface_state_pool.addr;
          decoder->instruction_base = physical_device->va.instruction_state_pool.addr;
       }
    }
-
-   anv_device_set_physical(device, physical_device);
-   device->kmd_backend = anv_kmd_backend_get(device->info->kmd_type);
 
    /* XXX(chadv): Can we dup() physicalDevice->fd here? */
    device->fd = open(physical_device->path, O_RDWR | O_CLOEXEC);
@@ -3854,7 +3911,7 @@ VkResult anv_CreateDevice(
       VkCommandPoolCreateInfo pool_info = {
          .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
          .queueFamilyIndex =
-             anv_get_first_render_queue_index(device->physical),
+             anv_get_first_render_queue_index(device),
       };
 
       result = vk_common_CreateCommandPool(anv_device_to_handle(device),
@@ -4034,8 +4091,6 @@ void anv_DestroyDevice(
 
    anv_memory_trace_finish(device);
 
-   struct anv_physical_device *pdevice = device->physical;
-
    for (uint32_t i = 0; i < device->queue_count; i++)
       anv_queue_finish(&device->queues[i]);
    vk_free(&device->vk.alloc, device->queues);
@@ -4148,7 +4203,7 @@ void anv_DestroyDevice(
    anv_device_destroy_context_or_vm(device);
 
    if (INTEL_DEBUG(DEBUG_BATCH | DEBUG_BATCH_STATS)) {
-      for (unsigned i = 0; i < pdevice->queue.family_count; i++) {
+      for (unsigned i = 0; i < device->queue_families->family_count; i++) {
          if (INTEL_DEBUG(DEBUG_BATCH_STATS))
             intel_batch_print_stats(&device->decoder[i]);
          intel_batch_decode_ctx_finish(&device->decoder[i]);

@@ -291,7 +291,7 @@ blorp_exec_on_render(struct blorp_batch *batch,
    assert((batch->flags & BLORP_BATCH_USE_COMPUTE) == 0);
 
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
-   assert(cmd_buffer->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT);
+   assert(anv_cmd_buffer_is_render_queue(cmd_buffer));
 
    struct anv_gfx_dynamic_state *hw_state =
       &cmd_buffer->state.gfx.dyn_state;

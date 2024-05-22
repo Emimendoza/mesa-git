@@ -142,9 +142,8 @@ anv_create_cmd_buffer(struct vk_command_pool *pool,
 
    cmd_buffer->device = device;
 
-   assert(pool->queue_family_index < device->physical->queue.family_count);
-   cmd_buffer->queue_family =
-      &device->physical->queue.families[pool->queue_family_index];
+   assert(pool->queue_family_index < device->queue_families->family_count);
+   cmd_buffer->queue_family = &device->queue_families->families[pool->queue_family_index];
 
    result = anv_cmd_buffer_init_batch_bo_chain(cmd_buffer);
    if (result != VK_SUCCESS)

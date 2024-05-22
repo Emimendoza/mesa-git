@@ -67,10 +67,9 @@ anv_queue_init(struct anv_device *device, struct anv_queue *queue,
                const VkDeviceQueueCreateInfo *pCreateInfo,
                uint32_t index_in_family)
 {
-   struct anv_physical_device *pdevice = device->physical;
-   assert(queue->vk.queue_family_index < pdevice->queue.family_count);
+   assert(queue->vk.queue_family_index < device->queue_families->family_count);
    struct anv_queue_family *queue_family =
-      &device->physical->queue.families[pCreateInfo->queueFamilyIndex];
+      &device->queue_families->families[pCreateInfo->queueFamilyIndex];
    VkResult result;
 
    result = vk_queue_init(&queue->vk, &device->vk, pCreateInfo,

@@ -1032,11 +1032,11 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
     * (should be the most capable)
     */
    const VkQueueFlagBits src_queue_flags =
-      device->physical->queue.families[
+      device->queue_families->families[
          (src_queue_external || src_queue_family == VK_QUEUE_FAMILY_IGNORED) ?
          0 : src_queue_family].queueFlags;
    const VkQueueFlagBits dst_queue_flags =
-      device->physical->queue.families[
+      device->queue_families->families[
          (dst_queue_external || dst_queue_family == VK_QUEUE_FAMILY_IGNORED) ?
          0 : dst_queue_family].queueFlags;
 

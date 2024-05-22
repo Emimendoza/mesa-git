@@ -57,10 +57,10 @@ create_engine(struct anv_device *device,
    struct anv_physical_device *physical = device->physical;
    uint32_t queue_family_index =
       create_companion_rcs_engine ?
-      anv_get_first_render_queue_index(physical) :
+      anv_get_first_render_queue_index(device) :
       pCreateInfo->queueFamilyIndex;
    struct anv_queue_family *queue_family =
-      &physical->queue.families[queue_family_index];
+      &device->queue_families->families[queue_family_index];
    const struct intel_query_engine_info *engines = physical->engine_info;
    struct drm_xe_engine_class_instance *instances;
    const VkDeviceQueueGlobalPriorityCreateInfoKHR *queue_priority =
