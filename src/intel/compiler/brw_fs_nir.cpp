@@ -132,6 +132,10 @@ fs_nir_setup_outputs(nir_to_brw_state &ntb)
 {
    fs_visitor &s = ntb.s;
 
+   // XXX: this is happening for too many stages (and is a wasted no op)
+   //
+   // XXX: geometry shader store_output is not getting new registers after
+   // every EmitVertex(), so these are not SSA, and we cannot cope
    if (s.stage == MESA_SHADER_TESS_CTRL ||
        s.stage == MESA_SHADER_TASK ||
        s.stage == MESA_SHADER_MESH ||
@@ -378,19 +382,9 @@ fs_nir_emit_system_values(nir_to_brw_state &ntb)
     * never end up using it.
     */
    {
-      const fs_builder abld = bld.annotate("gl_SubgroupInvocation", NULL);
       fs_reg &reg = ntb.system_values[SYSTEM_VALUE_SUBGROUP_INVOCATION];
-      reg = abld.vgrf(BRW_TYPE_UW);
-      abld.UNDEF(reg);
-
-      const fs_builder allbld8 = abld.group(8, 0).exec_all();
-      allbld8.MOV(reg, brw_imm_v(0x76543210));
-      if (s.dispatch_width > 8)
-         allbld8.ADD(byte_offset(reg, 16), reg, brw_imm_uw(8u));
-      if (s.dispatch_width > 16) {
-         const fs_builder allbld16 = abld.group(16, 0).exec_all();
-         allbld16.ADD(byte_offset(reg, 32), reg, brw_imm_uw(16u));
-      }
+      reg = bld.vgrf(s.dispatch_width < 16 ? BRW_TYPE_UD : BRW_TYPE_UW);
+      bld.emit(SHADER_OPCODE_LOAD_SUBGROUP_INVOCATION, reg);
    }
 
    nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)s.nir);
@@ -3166,6 +3160,13 @@ fs_nir_emit_gs_intrinsic(nir_to_brw_state &ntb,
 
    case nir_intrinsic_emit_vertex_with_counter:
       emit_gs_vertex(ntb, instr->src[0], nir_intrinsic_stream_id(instr));
+
+      /* After an EmitVertex() call, the values of all outputs are undefined.
+       * If this is not in control flow, recreate a fresh set of output
+       * registers to keep their live ranges separate.
+       */
+      if (instr->instr.block->cf_node.parent->type == nir_cf_node_function)
+         fs_nir_setup_outputs(ntb);
       break;
 
    case nir_intrinsic_end_primitive_with_counter:
@@ -4761,22 +4762,43 @@ get_nir_buffer_intrinsic_index(nir_to_brw_state &ntb, const brw::fs_builder &bld
 static fs_reg
 swizzle_nir_scratch_addr(nir_to_brw_state &ntb,
                          const brw::fs_builder &bld,
-                         const fs_reg &nir_addr,
+                         const nir_src &nir_addr_src,
                          bool in_dwords)
 {
    fs_visitor &s = ntb.s;
-
-   fs_reg nir_addr_ud = retype(nir_addr, BRW_TYPE_UD);
 
    const fs_reg &chan_index =
       ntb.system_values[SYSTEM_VALUE_SUBGROUP_INVOCATION];
    const unsigned chan_index_bits = ffs(s.dispatch_width) - 1;
 
+   if (nir_src_is_const(nir_addr_src)) {
+      unsigned nir_addr = nir_src_as_uint(nir_addr_src);
+      if (in_dwords) {
+         /* In this case, we know the address is aligned to a DWORD and we want
+          * the final address in DWORDs.
+          */
+         return bld.OR(chan_index,
+                       brw_imm_ud(nir_addr << (chan_index_bits - 2)));
+      } else {
+         /* This case is substantially more annoying because we have to pay
+          * attention to those pesky two bottom bits.
+          */
+         unsigned addr_hi = (nir_addr & ~0x3u) << chan_index_bits;
+         unsigned addr_lo = (nir_addr &  0x3u);
+
+         return bld.OR(bld.SHL(chan_index, brw_imm_ud(2)),
+                       brw_imm_ud(addr_lo | addr_hi));
+      }
+   }
+
+   const fs_reg nir_addr =
+      retype(get_nir_src(ntb, nir_addr_src), BRW_TYPE_UD);
+
    if (in_dwords) {
       /* In this case, we know the address is aligned to a DWORD and we want
        * the final address in DWORDs.
        */
-      return bld.OR(bld.SHL(nir_addr_ud, brw_imm_ud(chan_index_bits - 2)),
+      return bld.OR(bld.SHL(nir_addr, brw_imm_ud(chan_index_bits - 2)),
                     chan_index);
    } else {
       /* This case substantially more annoying because we have to pay
@@ -4784,8 +4806,8 @@ swizzle_nir_scratch_addr(nir_to_brw_state &ntb,
        */
       fs_reg chan_addr = bld.SHL(chan_index, brw_imm_ud(2));
       fs_reg addr_bits =
-         bld.OR(bld.AND(nir_addr_ud, brw_imm_ud(0x3u)),
-                bld.SHL(bld.AND(nir_addr_ud, brw_imm_ud(~0x3u)),
+         bld.OR(bld.AND(nir_addr, brw_imm_ud(0x3u)),
+                bld.SHL(bld.AND(nir_addr, brw_imm_ud(~0x3u)),
                         brw_imm_ud(chan_index_bits)));
       return bld.OR(addr_bits, chan_addr);
    }
@@ -6695,7 +6717,13 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
       srcs[SURFACE_LOGICAL_SRC_IMM_DIMS] = brw_imm_ud(1);
       srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(bit_size);
       srcs[SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK] = brw_imm_ud(0);
-      const fs_reg nir_addr = get_nir_src(ntb, instr->src[0]);
+
+      /* The offset for a DWORD scattered message is in dwords. */
+      bool addr_in_dwords = devinfo->verx10 < 125 &&
+         bit_size == 32 && nir_intrinsic_align(instr) >= 4;
+
+      srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
+         swizzle_nir_scratch_addr(ntb, bld, instr->src[0], addr_in_dwords);
 
       /* Make dest unsigned because that's what the temporary will be */
       dest.type = brw_type_with_size(BRW_TYPE_UD, bit_size);
@@ -6710,24 +6738,15 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
             assert(bit_size == 32 &&
                    nir_intrinsic_align(instr) >= 4);
 
-            srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-               swizzle_nir_scratch_addr(ntb, bld, nir_addr, false);
             srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(1);
 
             bld.emit(SHADER_OPCODE_UNTYPED_SURFACE_READ_LOGICAL,
                      dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
          } else {
-            /* The offset for a DWORD scattered message is in dwords. */
-            srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-               swizzle_nir_scratch_addr(ntb, bld, nir_addr, true);
-
             bld.emit(SHADER_OPCODE_DWORD_SCATTERED_READ_LOGICAL,
                      dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
          }
       } else {
-         srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-            swizzle_nir_scratch_addr(ntb, bld, nir_addr, false);
-
          fs_reg read_result = bld.vgrf(BRW_TYPE_UD);
          bld.emit(SHADER_OPCODE_BYTE_SCATTERED_READ_LOGICAL,
                   read_result, srcs, SURFACE_LOGICAL_NUM_SRCS);
@@ -6765,7 +6784,13 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
        * they should not have different behaviour in the helper invocations.
        */
       srcs[SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK] = brw_imm_ud(0);
-      const fs_reg nir_addr = get_nir_src(ntb, instr->src[1]);
+
+      /* The offset for a DWORD scattered message is in dwords. */
+      bool addr_in_dwords = devinfo->verx10 < 125 &&
+         bit_size == 32 && nir_intrinsic_align(instr) >= 4;
+
+      srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
+         swizzle_nir_scratch_addr(ntb, bld, instr->src[1], addr_in_dwords);
 
       fs_reg data = get_nir_src(ntb, instr->src[0]);
       data.type = brw_type_with_size(BRW_TYPE_UD, bit_size);
@@ -6779,8 +6804,6 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
          if (devinfo->verx10 >= 125) {
             srcs[SURFACE_LOGICAL_SRC_DATA] = data;
 
-            srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-               swizzle_nir_scratch_addr(ntb, bld, nir_addr, false);
             srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(1);
 
             bld.emit(SHADER_OPCODE_UNTYPED_SURFACE_WRITE_LOGICAL,
@@ -6788,19 +6811,12 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
          } else {
             srcs[SURFACE_LOGICAL_SRC_DATA] = data;
 
-            /* The offset for a DWORD scattered message is in dwords. */
-            srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-               swizzle_nir_scratch_addr(ntb, bld, nir_addr, true);
-
             bld.emit(SHADER_OPCODE_DWORD_SCATTERED_WRITE_LOGICAL,
                      fs_reg(), srcs, SURFACE_LOGICAL_NUM_SRCS);
          }
       } else {
          srcs[SURFACE_LOGICAL_SRC_DATA] = bld.vgrf(BRW_TYPE_UD);
          bld.MOV(srcs[SURFACE_LOGICAL_SRC_DATA], data);
-
-         srcs[SURFACE_LOGICAL_SRC_ADDRESS] =
-            swizzle_nir_scratch_addr(ntb, bld, nir_addr, false);
 
          bld.emit(SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL,
                   fs_reg(), srcs, SURFACE_LOGICAL_NUM_SRCS);
@@ -8086,6 +8102,7 @@ fs_nir_emit_texture(nir_to_brw_state &ntb,
       header_bits |= instr->component << 16;
    }
 
+   fs_reg nir_def_reg = get_nir_def(ntb, instr->def);
    fs_reg dst = bld.vgrf(brw_type_for_nir_type(devinfo, instr->dest_type), 4 + instr->is_sparse);
    fs_inst *inst = bld.emit(opcode, dst, srcs, ARRAY_SIZE(srcs));
    inst->offset = header_bits;
@@ -8135,6 +8152,8 @@ fs_nir_emit_texture(nir_to_brw_state &ntb,
    for (unsigned i = 0; i < read_size; i++)
       nir_dest[i] = offset(dst, bld, i);
 
+   bool direct_result = true;
+
    if (instr->op == nir_texop_query_levels) {
       /* # levels is in .w */
       if (devinfo->ver == 9) {
@@ -8152,13 +8171,19 @@ fs_nir_emit_texture(nir_to_brw_state &ntb,
       } else {
          nir_dest[0] = offset(dst, bld, 3);
       }
+      direct_result = false;
    }
 
    /* The residency bits are only in the first component. */
-   if (instr->is_sparse)
+   if (instr->is_sparse) {
       nir_dest[dest_size - 1] = component(offset(dst, bld, dest_size - 1), 0);
+      direct_result = false;
+   }
 
-   bld.LOAD_PAYLOAD(get_nir_def(ntb, instr->def), nir_dest, dest_size, 0);
+   if (direct_result)
+      inst->dst = nir_def_reg;
+   else
+      bld.LOAD_PAYLOAD(nir_def_reg, nir_dest, dest_size, 0);
 }
 
 static void

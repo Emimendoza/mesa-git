@@ -404,7 +404,11 @@ namespace {
    {
       switch (inst->opcode) {
       case BRW_OPCODE_MOV:
-         return false;
+         /* Scalar byte to float conversion is not allowed */
+         return devinfo->verx10 >= 125 &&
+                inst->dst.type == BRW_TYPE_F &&
+                is_uniform(inst->src[0]) &&
+                brw_type_size_bytes(inst->src[0].type) == 1;
       case BRW_OPCODE_SEL:
          return inst->dst.type != get_exec_type(inst);
       default:
