@@ -1995,6 +1995,23 @@ resolve_ahw_image(struct anv_device *device,
 #endif
 }
 
+static bool
+anv_image_supports_pat_compression(struct anv_device *device,
+                                   struct anv_image *image)
+{
+   if (INTEL_DEBUG(DEBUG_NO_CCS))
+      return false;
+
+   if (device->info->ver < 20)
+      return false;
+
+   if (image->vk.compr_flags & VK_IMAGE_COMPRESSION_DISABLED_EXT)
+      return false;
+
+   /* TODO: check for other compression requirements and return true */
+   return false;
+}
+
 void
 anv_image_get_memory_requirements(struct anv_device *device,
                                   struct anv_image *image,
@@ -2008,10 +2025,22 @@ anv_image_get_memory_requirements(struct anv_device *device,
     *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
     *    structure for the physical device is supported.
     */
-   uint32_t memory_types =
-      (image->vk.create_flags & VK_IMAGE_CREATE_PROTECTED_BIT) ?
-      device->physical->memory.protected_mem_types :
-      device->physical->memory.default_buffer_mem_types;
+   uint32_t memory_types;
+
+   if (image->vk.create_flags & VK_IMAGE_CREATE_PROTECTED_BIT)
+      memory_types = device->physical->memory.protected_mem_types;
+   else
+      memory_types = device->physical->memory.default_buffer_mem_types;
+
+   /* Compressed memory types are not CPU visible and Vulkan specification
+    * don't have any requirement about that but some applications fails to
+    * run without a host visible option, so here appending
+    * default_buffer_mem_types and compressed_mem_types.
+    * To increase memory compression usage the compressed memory type should
+    * be the first ones.
+    */
+   if (anv_image_supports_pat_compression(device, image))
+      memory_types |= device->physical->memory.compressed_mem_types;
 
    vk_foreach_struct(ext, pMemoryRequirements->pNext) {
       switch (ext->sType) {
