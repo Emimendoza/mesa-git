@@ -1451,6 +1451,7 @@ enum anv_gfx_state_bits {
    ANV_GFX_STATE_PS_EXTRA,
    ANV_GFX_STATE_PMA_FIX, /* Fake state to implement workaround */
    ANV_GFX_STATE_WA_18019816803, /* Fake state to implement workaround */
+   ANV_GFX_STATE_WA_14018283232, /* Fake state to implement workaround */
    ANV_GFX_STATE_TBIMR_TILE_PASS_INFO,
 
    ANV_GFX_STATE_MAX,
@@ -1743,6 +1744,16 @@ struct anv_gfx_dynamic_state {
    bool use_tbimr;
 
    bool pma_fix;
+
+   /**
+    * DEPTH and STENCIL attachment write state for Wa_18019816803.
+    */
+   bool ds_write_state;
+
+   /**
+    * Toggle tracking for Wa_14018283232.
+    */
+   bool wa_14018283232_toggle;
 
    BITSET_DECLARE(dirty, ANV_GFX_STATE_MAX);
 };
@@ -3726,11 +3737,6 @@ struct anv_cmd_graphics_state {
    /* State tracking for Wa_14018912822. */
    bool color_blend_zero;
    bool alpha_blend_zero;
-
-   /**
-    * DEPTH and STENCIL attachment write state for Wa_18019816803.
-    */
-   bool ds_write_state;
 
    /**
     * State tracking for Wa_18020335297.
@@ -6022,7 +6028,11 @@ void anv_apply_per_prim_attr_wa(struct nir_shader *ms_nir,
 /* Use to emit a series of memcpy operations */
 struct anv_memcpy_state {
    struct anv_device *device;
+   struct anv_cmd_buffer *cmd_buffer;
    struct anv_batch *batch;
+
+   /* Configuration programmed by the memcpy operation */
+   struct intel_urb_config urb_cfg;
 
    struct anv_vb_cache_range vb_bound;
    struct anv_vb_cache_range vb_dirty;
