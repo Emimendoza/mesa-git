@@ -700,6 +700,8 @@ fn lower_and_optimize_nir(
         Some(glsl_get_cl_type_size_align),
     );
 
+    nir_pass!(nir, nir_lower_memcpy);
+
     nir_pass!(
         nir,
         nir_lower_explicit_io,
