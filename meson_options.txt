@@ -191,6 +191,15 @@ option(
 )
 
 option(
+  'gallium-wgl-libtype',
+  type : 'combo',
+  value : 'shared',
+  choices : ['shared', 'static'],
+  description : 'library type of the gallium wgl target built for Windows. ' +
+                'defaults to a DLL library. ',
+)
+
+option(
   'gallium-d3d10-dll-name',
   type : 'string',
   value : 'libgallium_d3d10',
