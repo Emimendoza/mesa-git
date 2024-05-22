@@ -1132,7 +1132,6 @@ visit_if(nir_if *if_stmt, struct divergence_state *state)
 static bool
 visit_loop(nir_loop *loop, struct divergence_state *state)
 {
-   assert(!nir_loop_has_continue_construct(loop));
    bool progress = false;
    nir_block *loop_header = nir_loop_first_block(loop);
    nir_block *loop_preheader = nir_block_cf_tree_prev(loop_header);
@@ -1164,6 +1163,18 @@ visit_loop(nir_loop *loop, struct divergence_state *state)
       progress |= visit_cf_list(&loop->body, &loop_state);
       repeat = false;
 
+      if (nir_loop_has_continue_construct(loop)) {
+         /* Handle the phis at the loop continue construct which merge
+          * all loop-carried values.
+          */
+         nir_foreach_phi(phi, nir_loop_first_continue_block(loop)) {
+            progress |= visit_loop_header_phi(phi, NULL,
+                                              loop_state.divergent_loop_continue);
+         }
+
+         progress |= visit_cf_list(&loop->continue_list, &loop_state);
+      }
+
       /* revisit loop header phis to see if something has changed */
       nir_foreach_phi(phi, loop_header) {
          repeat |= visit_loop_header_phi(phi, loop_preheader,
@@ -1181,7 +1192,8 @@ visit_loop(nir_loop *loop, struct divergence_state *state)
       progress |= visit_loop_exit_phi(phi, loop_state.divergent_loop_break);
    }
 
-   loop->divergent = (loop_state.divergent_loop_break || loop_state.divergent_loop_continue);
+   loop->divergent_continue = loop_state.divergent_loop_continue;
+   loop->divergent_break = loop_state.divergent_loop_break;
 
    return progress;
 }
@@ -1253,13 +1265,21 @@ nir_update_instr_divergence(nir_shader *shader, nir_instr *instr)
 
    if (instr->type == nir_instr_type_phi) {
       nir_cf_node *prev = nir_cf_node_prev(&instr->block->cf_node);
-      /* can only update gamma/if phis */
-      if (!prev || prev->type != nir_cf_node_if)
-         return false;
+      nir_phi_instr *phi = nir_instr_as_phi(instr);
 
-      nir_if *nif = nir_cf_node_as_if(prev);
+      if (!prev) {
+         nir_loop *loop = nir_cf_node_as_loop(instr->block->cf_node.parent);
+         nir_block *preheader = nir_cf_node_cf_tree_prev(&loop->cf_node);
+         visit_loop_header_phi(phi, preheader, loop->divergent_continue);
+      } else if (prev->type == nir_cf_node_if) {
+         nir_if *nif = nir_cf_node_as_if(prev);
+         visit_if_merge_phi(phi, nir_src_is_divergent(nif->condition));
+      } else {
+         assert(prev->type == nir_cf_node_loop);
+         nir_loop *loop = nir_cf_node_as_loop(prev);
+         visit_loop_exit_phi(phi, loop->divergent_break);
+      }
 
-      visit_if_merge_phi(nir_instr_as_phi(instr), nir_src_is_divergent(nif->condition));
       return true;
    }
 
@@ -1275,15 +1295,14 @@ nir_update_instr_divergence(nir_shader *shader, nir_instr *instr)
 bool
 nir_has_divergent_loop(nir_shader *shader)
 {
-   bool divergent_loop = false;
    nir_function_impl *func = nir_shader_get_entrypoint(shader);
 
    foreach_list_typed(nir_cf_node, node, node, &func->body) {
-      if (node->type == nir_cf_node_loop && nir_cf_node_as_loop(node)->divergent) {
-         divergent_loop = true;
-         break;
+      if (node->type == nir_cf_node_loop) {
+         if (nir_cf_node_as_loop(node)->divergent_break)
+            return true;
       }
    }
 
-   return divergent_loop;
+   return false;
 }
