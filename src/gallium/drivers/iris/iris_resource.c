@@ -376,24 +376,13 @@ iris_memobj_create_from_handle(struct pipe_screen *pscreen,
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
    struct iris_memory_object *memobj = CALLOC_STRUCT(iris_memory_object);
-   struct iris_bo *bo;
-
    if (!memobj)
       return NULL;
 
-   switch (whandle->type) {
-   case WINSYS_HANDLE_TYPE_SHARED:
-      bo = iris_bo_gem_create_from_name(screen->bufmgr, "winsys image",
-                                        whandle->handle);
-      break;
-   case WINSYS_HANDLE_TYPE_FD:
-      bo = iris_bo_import_dmabuf(screen->bufmgr, whandle->handle,
-                                 whandle->modifier);
-      break;
-   default:
-      unreachable("invalid winsys handle type");
-   }
-
+   assert(whandle->type == WINSYS_HANDLE_TYPE_FD);
+   assert(whandle->modifier == DRM_FORMAT_MOD_INVALID);
+   struct iris_bo *bo = iris_bo_import_dmabuf(screen->bufmgr, whandle->handle,
+                                              DRM_FORMAT_MOD_INVALID);
    if (!bo) {
       free(memobj);
       return NULL;
@@ -761,8 +750,19 @@ iris_resource_configure_main(const struct iris_screen *screen,
    if (templ->usage == PIPE_USAGE_STAGING)
       usage |= ISL_SURF_USAGE_STAGING_BIT;
 
-   if (templ->bind & PIPE_BIND_RENDER_TARGET)
+   if (templ->bind & PIPE_BIND_RENDER_TARGET) {
       usage |= ISL_SURF_USAGE_RENDER_TARGET_BIT;
+
+      /* In addition to the render engine, we may use the blitter or compute
+       * engine on this image. The reads and writes performed by the engines
+       * are guaranteed to be sequential with respect to each other. This is
+       * due to the implementation of flush_for_cross_batch_dependencies().
+       */
+      if ((templ->bind & PIPE_BIND_PRIME_BLIT_DST) ||
+          screen->devinfo->has_compute_engine) {
+         usage |= ISL_SURF_USAGE_MULTI_ENGINE_SEQ_BIT;
+      }
+   }
 
    if (templ->bind & PIPE_BIND_SAMPLER_VIEW)
       usage |= ISL_SURF_USAGE_TEXTURE_BIT;
