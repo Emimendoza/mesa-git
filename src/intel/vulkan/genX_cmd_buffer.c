@@ -972,6 +972,13 @@ genX(set_fast_clear_state)(struct anv_cmd_buffer *cmd_buffer,
    }
 }
 
+static inline bool
+vk_queue_family_is_external(uint32_t family)
+{
+   return family == VK_QUEUE_FAMILY_FOREIGN_EXT ||
+          family == VK_QUEUE_FAMILY_EXTERNAL;
+}
+
 /**
  * @brief Transitions a color buffer from one layout to another.
  *
@@ -1021,12 +1028,9 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
       : NULL;
 
    const bool src_queue_external =
-      src_queue_family == VK_QUEUE_FAMILY_FOREIGN_EXT ||
-      src_queue_family == VK_QUEUE_FAMILY_EXTERNAL;
-
+      vk_queue_family_is_external(src_queue_family);
    const bool dst_queue_external =
-      dst_queue_family == VK_QUEUE_FAMILY_FOREIGN_EXT ||
-      dst_queue_family == VK_QUEUE_FAMILY_EXTERNAL;
+      vk_queue_family_is_external(dst_queue_family);
 
    /* If the queues are external, consider the first queue family flags
     * (should be the most capable)
@@ -4009,7 +4013,28 @@ cmd_buffer_barrier(struct anv_cmd_buffer *cmd_buffer,
       const uint32_t level_count =
          vk_image_subresource_level_count(&image->vk, range);
 
-      VkImageLayout old_layout = img_barrier->oldLayout;
+      const struct isl_drm_modifier_info *isl_mod_info =
+         image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT ?
+         isl_drm_modifier_get_info(image->vk.drm_format_mod) : NULL;
+
+      /* Ignore UNDEFINED src layout when there is a queue transition :
+       * https://gitlab.khronos.org/vulkan/vulkan/-/issues/3846
+       *
+       * Applications like gamescope will use queue transfer quite a lot and
+       * they actually want the transfer to not alter the image's content. So
+       * we should not consider it undefined which might reset compression
+       * data.
+       *
+       * We limit this to modifier images with compressed data, because non
+       * compressed images might have private compressed data that would need
+       * to be reset.
+       */
+      VkImageLayout old_layout =
+         (isl_mod_info &&
+          isl_drm_modifier_has_aux(isl_mod_info->modifier) &&
+          img_barrier->oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+          vk_queue_family_is_external(img_barrier->srcQueueFamilyIndex)) ?
+         img_barrier->newLayout : img_barrier->oldLayout;
       VkImageLayout new_layout = img_barrier->newLayout;
 
       /* If we're inside a render pass, the runtime might have converted some
