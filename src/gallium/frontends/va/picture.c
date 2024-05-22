@@ -435,8 +435,7 @@ handleVASliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
          sizes[num_buffers++] = context->mjpeg.slice_header_size;
          break;
       case PIPE_VIDEO_FORMAT_VP9:
-         if (false == context->desc.base.protected_playback)
-            vlVaDecoderVP9BitstreamHeader(context, buf);
+         vlVaDecoderVP9BitstreamHeader(context, buf);
          break;
       case PIPE_VIDEO_FORMAT_AV1:
          break;
@@ -445,9 +444,16 @@ handleVASliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
       }
    }
 
-   buffers[num_buffers] = buf->data;
-   sizes[num_buffers] = buf->size;
-   ++num_buffers;
+   if (context->desc.base.protected_playback && PIPE_VIDEO_FORMAT_VP9 == format){
+        vlVaDecoderVP9BitstreamHeader(context, buf);
+        buffers[num_buffers] = buf->data + context->desc.vp9.picture_parameter.frame_header_length_in_bytes;
+        sizes[num_buffers] = buf->size - context->desc.vp9.picture_parameter.frame_header_length_in_bytes;
+        ++num_buffers;
+   } else {
+        buffers[num_buffers] = buf->data;
+        sizes[num_buffers] = buf->size;
+        ++num_buffers;
+   }
 
    if (format == PIPE_VIDEO_FORMAT_JPEG) {
       buffers[num_buffers] = (void *const)&eoi_jpeg;
