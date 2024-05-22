@@ -2180,7 +2180,8 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
       int c_count = 0;
       const bool kernel_supports_non_render_engines = pdevice->has_vm_control;
       const bool sparse_supports_non_render_engines =
-         pdevice->sparse_type != ANV_SPARSE_TYPE_TRTT;
+         pdevice->sparse_type != ANV_SPARSE_TYPE_TRTT ||
+         pdevice->info.ver >= 12;
       const bool can_use_non_render_engines =
          kernel_supports_non_render_engines &&
          sparse_supports_non_render_engines;

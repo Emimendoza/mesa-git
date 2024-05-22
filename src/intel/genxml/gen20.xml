@@ -880,6 +880,12 @@
     <field name="Address" start="66" end="111" type="address" />
     <field name="Immediate Data" start="128" end="191" type="uint" />
   </instruction>
+  <register name="BLT_TRTT_VA_RANGE" length="1" num="0x4484">
+    <field name="TR-VA Base" start="0" end="12" type="uint" />
+  </register>
+  <register name="COMP_CTX0_TRTT_VA_RANGE" length="1" num="0x4584">
+    <field name="TR-VA Base" start="0" end="12" type="uint" />
+  </register>
   <register name="GFX_TRTT_VA_RANGE" length="1" num="0x4404">
     <field name="TR-VA Base" start="0" end="12" type="uint" />
   </register>
