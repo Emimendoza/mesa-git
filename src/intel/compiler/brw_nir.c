@@ -711,6 +711,25 @@ brw_nir_lower_fs_outputs(nir_shader *nir)
    this_progress;                                          \
 })
 
+static uint32_t brw_nir_max_imm_offset(nir_intrinsic_instr *intrin,
+                                       const void *data)
+{
+   switch (intrin->intrinsic) {
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_store_shared:
+   case nir_intrinsic_shared_atomic:
+   case nir_intrinsic_shared_atomic_swap:
+      return (1 << 19);
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_global_atomic:
+   case nir_intrinsic_global_atomic_swap:
+      return (1 << 16);
+   default:
+      return 0;
+   }
+}
+
 void
 brw_nir_optimize(nir_shader *nir,
                  const struct intel_device_info *devinfo)
@@ -788,6 +807,12 @@ brw_nir_optimize(nir_shader *nir,
 
       LOOP_OPT(nir_lower_constant_convert_alu_types);
       LOOP_OPT(nir_opt_constant_folding);
+
+      const nir_opt_offsets_options offset_options = {
+         .max_offset_cb = brw_nir_max_imm_offset,
+      };
+
+      LOOP_OPT(nir_opt_offsets, &offset_options);
 
       if (lower_flrp != 0) {
          if (LOOP_OPT(nir_lower_flrp,
