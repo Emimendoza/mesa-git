@@ -2705,7 +2705,7 @@ radv_fill_nir_compiler_options(struct radv_nir_compiler_options *options, struct
                                bool keep_statistic_info)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
 
    /* robust_buffer_access_llvm here used by LLVM only, pipeline robustness is not exposed there. */
    options->robust_buffer_access_llvm = device->buffer_robustness >= RADV_BUFFER_ROBUSTNESS_1;
@@ -2717,6 +2717,7 @@ radv_fill_nir_compiler_options(struct radv_nir_compiler_options *options, struct
    options->record_stats = keep_statistic_info;
    options->check_ir = instance->debug_flags & RADV_DEBUG_CHECKIR;
    options->enable_mrt_output_nan_fixup = gfx_state ? gfx_state->ps.epilog.enable_mrt_output_nan_fixup : false;
+   options->dump_mtx = &instance->shader_dump_mtx;
 }
 
 static void
@@ -2827,15 +2828,22 @@ radv_shader_generate_debug_info(struct radv_device *device, bool dump_shader, bo
                                 struct radv_shader_binary *binary, struct radv_shader *shader,
                                 struct nir_shader *const *shaders, int shader_count, struct radv_shader_info *info)
 {
+   struct radv_physical_device *pdev = radv_device_physical(device);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
+
    if (dump_shader || keep_shader_info)
       radv_capture_shader_executable_info(device, shader, shaders, shader_count, binary);
 
    if (dump_shader) {
+      simple_mtx_lock(&instance->shader_dump_mtx);
+      for (int i = 0; i < shader_count; ++i)
+         nir_print_shader(shaders[i], stderr);
       fprintf(stderr, "%s", radv_get_shader_name(info, shaders[0]->info.stage));
       for (int i = 1; i < shader_count; ++i)
          fprintf(stderr, " + %s", radv_get_shader_name(info, shaders[i]->info.stage));
 
       fprintf(stderr, "\ndisasm:\n%s\n", shader->disasm_string);
+      simple_mtx_unlock(&instance->shader_dump_mtx);
    }
 }
 
@@ -2894,7 +2902,7 @@ struct radv_shader *
 radv_create_rt_prolog(struct radv_device *device)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
    struct radv_shader *prolog;
    struct radv_shader_args in_args = {0};
    struct radv_shader_args out_args = {0};
@@ -2947,8 +2955,10 @@ radv_create_rt_prolog(struct radv_device *device)
    }
 
    if (options.dump_shader) {
+      simple_mtx_lock(&instance->shader_dump_mtx);
       fprintf(stderr, "Raytracing prolog");
       fprintf(stderr, "\ndisasm:\n%s\n", prolog->disasm_string);
+      simple_mtx_unlock(&instance->shader_dump_mtx);
    }
 
 done:
@@ -2960,7 +2970,7 @@ struct radv_shader_part *
 radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_key *key)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
    struct radv_shader_part *prolog;
    struct radv_shader_args args = {0};
    struct radv_nir_compiler_options options = {0};
@@ -3010,8 +3020,10 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    prolog->nontrivial_divisors = key->nontrivial_divisors;
 
    if (options.dump_shader) {
+      simple_mtx_lock(&instance->shader_dump_mtx);
       fprintf(stderr, "Vertex prolog");
       fprintf(stderr, "\ndisasm:\n%s\n", prolog->disasm_string);
+      simple_mtx_unlock(&instance->shader_dump_mtx);
    }
 
    free(binary);
@@ -3028,7 +3040,7 @@ radv_create_ps_epilog(struct radv_device *device, const struct radv_ps_epilog_ke
                       struct radv_shader_part_binary **binary_out)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
    struct radv_shader_part *epilog;
    struct radv_shader_args args = {0};
    struct radv_nir_compiler_options options = {0};
@@ -3068,8 +3080,10 @@ radv_create_ps_epilog(struct radv_device *device, const struct radv_ps_epilog_ke
    epilog->key.ps = *key;
 
    if (options.dump_shader) {
+      simple_mtx_lock(&instance->shader_dump_mtx);
       fprintf(stderr, "Fragment epilog");
       fprintf(stderr, "\ndisasm:\n%s\n", epilog->disasm_string);
+      simple_mtx_unlock(&instance->shader_dump_mtx);
    }
 
    if (binary_out) {
