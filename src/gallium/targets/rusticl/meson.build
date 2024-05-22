@@ -50,6 +50,7 @@ librusticl = shared_library(
   ],
   dependencies : [
     driver_asahi,
+    driver_freedreno,
     driver_iris,
     driver_nouveau,
     driver_r600,
