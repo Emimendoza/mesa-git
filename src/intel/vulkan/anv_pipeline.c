@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include "util/archive.h"
 #include "util/mesa-sha1.h"
 #include "util/os_time.h"
 #include "common/intel_l3_config.h"
@@ -44,6 +45,56 @@
 #include "vk_pipeline.h"
 #include "vk_render_pass.h"
 #include "vk_util.h"
+
+#include "git_sha1.h"
+
+struct anv_debug_archiver
+{
+   FILE *f;
+   archive_writer *aw;
+   char prefix[128];
+};
+
+static void
+anv_debug_archiver_set_prefix(struct anv_debug_archiver *da, const char *prefix)
+{
+   if (!prefix || !*prefix) {
+      strcpy(da->prefix, "mda");
+   } else {
+      snprintf(da->prefix, ARRAY_SIZE(da->prefix) - 1, "mda/%s", prefix);
+   }
+
+   da->aw->prefix = da->prefix;
+}
+
+static struct anv_debug_archiver *
+anv_start_debug_archiver(void *mem_ctx, const char *name)
+{
+   struct anv_debug_archiver *da = rzalloc(mem_ctx, struct anv_debug_archiver);
+
+   char *filename = ralloc_asprintf(mem_ctx, "mda.%s.tar", name);
+   da->f = fopen(filename, "wb+");
+
+   da->aw = rzalloc(da, struct archive_writer);
+   archive_writer_init(da->aw, da->f);
+
+   anv_debug_archiver_set_prefix(da, "");
+
+   archive_writer_start_file(da->aw, "mesa.txt");
+   fprintf(da->f, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1 "\n");
+   archive_writer_finish_file(da->aw);
+
+   return da;
+}
+
+static void
+anv_finish_debug_archiver(struct anv_debug_archiver *da)
+{
+   if (da != NULL) {
+      fclose(da->f);
+      ralloc_free(da);
+   }
+}
 
 struct lower_set_vtx_and_prim_count_state {
    nir_variable *primitive_count;
@@ -1196,7 +1247,8 @@ anv_pipeline_compile_vs(const struct brw_compiler *compiler,
                         void *mem_ctx,
                         struct anv_graphics_base_pipeline *pipeline,
                         struct anv_pipeline_stage *vs_stage,
-                        uint32_t view_mask)
+                        uint32_t view_mask,
+                        struct anv_debug_archiver *debug_archiver)
 {
    /* When using Primitive Replication for multiview, each view gets its own
     * position slot.
@@ -1223,6 +1275,7 @@ anv_pipeline_compile_vs(const struct brw_compiler *compiler,
          .log_data = pipeline->base.device,
          .mem_ctx = mem_ctx,
          .source_hash = vs_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &vs_stage->key.vs,
       .prog_data = &vs_stage->prog_data.vs,
@@ -1299,7 +1352,8 @@ anv_pipeline_compile_tcs(const struct brw_compiler *compiler,
                          void *mem_ctx,
                          struct anv_device *device,
                          struct anv_pipeline_stage *tcs_stage,
-                         struct anv_pipeline_stage *prev_stage)
+                         struct anv_pipeline_stage *prev_stage,
+                         struct anv_debug_archiver *debug_archiver)
 {
    tcs_stage->key.tcs.outputs_written =
       tcs_stage->nir->info.outputs_written;
@@ -1315,6 +1369,7 @@ anv_pipeline_compile_tcs(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = tcs_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &tcs_stage->key.tcs,
       .prog_data = &tcs_stage->prog_data.tcs,
@@ -1337,7 +1392,8 @@ anv_pipeline_compile_tes(const struct brw_compiler *compiler,
                          void *mem_ctx,
                          struct anv_device *device,
                          struct anv_pipeline_stage *tes_stage,
-                         struct anv_pipeline_stage *tcs_stage)
+                         struct anv_pipeline_stage *tcs_stage,
+                         struct anv_debug_archiver *debug_archiver)
 {
    tes_stage->key.tes.inputs_read =
       tcs_stage->nir->info.outputs_written;
@@ -1353,6 +1409,7 @@ anv_pipeline_compile_tes(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = tes_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &tes_stage->key.tes,
       .prog_data = &tes_stage->prog_data.tes,
@@ -1376,7 +1433,8 @@ anv_pipeline_compile_gs(const struct brw_compiler *compiler,
                         void *mem_ctx,
                         struct anv_device *device,
                         struct anv_pipeline_stage *gs_stage,
-                        struct anv_pipeline_stage *prev_stage)
+                        struct anv_pipeline_stage *prev_stage,
+                        struct anv_debug_archiver *debug_archiver)
 {
    brw_compute_vue_map(compiler->devinfo,
                        &gs_stage->prog_data.gs.base.vue_map,
@@ -1392,6 +1450,7 @@ anv_pipeline_compile_gs(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = gs_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &gs_stage->key.gs,
       .prog_data = &gs_stage->prog_data.gs,
@@ -1414,7 +1473,8 @@ static void
 anv_pipeline_compile_task(const struct brw_compiler *compiler,
                           void *mem_ctx,
                           struct anv_device *device,
-                          struct anv_pipeline_stage *task_stage)
+                          struct anv_pipeline_stage *task_stage,
+                          struct anv_debug_archiver *debug_archiver)
 {
    task_stage->num_stats = 1;
 
@@ -1425,6 +1485,7 @@ anv_pipeline_compile_task(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = task_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &task_stage->key.task,
       .prog_data = &task_stage->prog_data.task,
@@ -1448,7 +1509,8 @@ anv_pipeline_compile_mesh(const struct brw_compiler *compiler,
                           void *mem_ctx,
                           struct anv_device *device,
                           struct anv_pipeline_stage *mesh_stage,
-                          struct anv_pipeline_stage *prev_stage)
+                          struct anv_pipeline_stage *prev_stage,
+                          struct anv_debug_archiver *debug_archiver)
 {
    mesh_stage->num_stats = 1;
 
@@ -1459,6 +1521,7 @@ anv_pipeline_compile_mesh(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = mesh_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &mesh_stage->key.mesh,
       .prog_data = &mesh_stage->prog_data.mesh,
@@ -1544,7 +1607,8 @@ anv_pipeline_compile_fs(const struct brw_compiler *compiler,
                         struct anv_pipeline_stage *prev_stage,
                         struct anv_graphics_base_pipeline *pipeline,
                         uint32_t view_mask,
-                        bool use_primitive_replication)
+                        bool use_primitive_replication,
+                        struct anv_debug_archiver *debug_archiver)
 {
    /* When using Primitive Replication for multiview, each view gets its own
     * position slot.
@@ -1576,6 +1640,7 @@ anv_pipeline_compile_fs(const struct brw_compiler *compiler,
          .log_data = device,
          .mem_ctx = mem_ctx,
          .source_hash = fs_stage->source_hash,
+         .debug_writer = debug_archiver->aw,
       },
       .key = &fs_stage->key.wm,
       .prog_data = &fs_stage->prog_data.wm,
@@ -2260,6 +2325,7 @@ anv_graphics_pipeline_compile(struct anv_graphics_base_pipeline *pipeline,
       return VK_PIPELINE_COMPILE_REQUIRED;
 
    void *tmp_ctx = ralloc_context(NULL);
+   struct anv_debug_archiver *debug_archiver = NULL;
 
    result = anv_graphics_pipeline_load_nir(pipeline, cache, stages,
                                            tmp_ctx, link_optimize /* need_clone */);
@@ -2430,6 +2496,13 @@ anv_graphics_pipeline_compile(struct anv_graphics_base_pipeline *pipeline,
          last_psr->nir->info.outputs_written |= VARYING_BIT_PRIMITIVE_SHADING_RATE;
    }
 
+   if (INTEL_DEBUG(DEBUG_OPTIMIZER)) {
+      char pipeline_hash[SHA1_DIGEST_STRING_LENGTH] = {};
+      _mesa_sha1_format(pipeline_hash, sha1);
+
+      debug_archiver = anv_start_debug_archiver(tmp_ctx, pipeline_hash);
+   }
+
    prev_stage = NULL;
    for (unsigned i = 0; i < ARRAY_SIZE(graphics_shader_order); i++) {
       gl_shader_stage s = graphics_shader_order[i];
@@ -2442,36 +2515,43 @@ anv_graphics_pipeline_compile(struct anv_graphics_base_pipeline *pipeline,
 
       void *stage_ctx = ralloc_context(NULL);
 
+      char stage_hash[SHA1_DIGEST_STRING_LENGTH] = {};
+      if (debug_archiver) {
+         _mesa_sha1_format(stage_hash, stage->shader_sha1);
+         anv_debug_archiver_set_prefix(debug_archiver, stage_hash);
+      }
+
       switch (s) {
       case MESA_SHADER_VERTEX:
          anv_pipeline_compile_vs(compiler, stage_ctx, pipeline,
-                                 stage, view_mask);
+                                 stage, view_mask, debug_archiver);
          break;
       case MESA_SHADER_TESS_CTRL:
          anv_pipeline_compile_tcs(compiler, stage_ctx, device,
-                                  stage, prev_stage);
+                                  stage, prev_stage, debug_archiver);
          break;
       case MESA_SHADER_TESS_EVAL:
          anv_pipeline_compile_tes(compiler, stage_ctx, device,
-                                  stage, prev_stage);
+                                  stage, prev_stage, debug_archiver);
          break;
       case MESA_SHADER_GEOMETRY:
          anv_pipeline_compile_gs(compiler, stage_ctx, device,
-                                 stage, prev_stage);
+                                 stage, prev_stage, debug_archiver);
          break;
       case MESA_SHADER_TASK:
          anv_pipeline_compile_task(compiler, stage_ctx, device,
-                                   stage);
+                                   stage, debug_archiver);
          break;
       case MESA_SHADER_MESH:
          anv_pipeline_compile_mesh(compiler, stage_ctx, device,
-                                   stage, prev_stage);
+                                   stage, prev_stage, debug_archiver);
          break;
       case MESA_SHADER_FRAGMENT:
          anv_pipeline_compile_fs(compiler, stage_ctx, device,
                                  stage, prev_stage, pipeline,
                                  view_mask,
-                                 use_primitive_replication);
+                                 use_primitive_replication,
+                                 debug_archiver);
          break;
       default:
          unreachable("Invalid graphics shader stage");
@@ -2539,6 +2619,7 @@ anv_graphics_pipeline_compile(struct anv_graphics_base_pipeline *pipeline,
       pipeline->shaders[s] = anv_shader_bin_ref(stage->imported.bin);
    }
 
+   anv_finish_debug_archiver(debug_archiver);
    ralloc_free(tmp_ctx);
 
 done:
@@ -2566,6 +2647,7 @@ done:
    return VK_SUCCESS;
 
 fail:
+   anv_finish_debug_archiver(debug_archiver);
    ralloc_free(tmp_ctx);
 
    for (unsigned s = 0; s < ARRAY_SIZE(pipeline->shaders); s++) {
@@ -2625,6 +2707,20 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
       return VK_PIPELINE_COMPILE_REQUIRED;
 
    void *mem_ctx = ralloc_context(NULL);
+
+   struct anv_debug_archiver *debug_archiver = NULL;
+   if (INTEL_DEBUG(DEBUG_OPTIMIZER)) {
+      char pipeline_hash[SHA1_DIGEST_STRING_LENGTH] = {};
+      _mesa_sha1_format(pipeline_hash, stage.cache_key.sha1);
+
+      debug_archiver = anv_start_debug_archiver(mem_ctx, pipeline_hash);
+
+      char stage_hash[SHA1_DIGEST_STRING_LENGTH] = {};
+      _mesa_sha1_format(stage_hash, stage.shader_sha1);
+
+      anv_debug_archiver_set_prefix(debug_archiver, stage_hash);
+   }
+
    if (stage.bin == NULL) {
       int64_t stage_start = os_time_get_nano();
 
@@ -2659,6 +2755,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
             .stats = stage.stats,
             .log_data = device,
             .mem_ctx = mem_ctx,
+            .debug_writer = debug_archiver->aw,
          },
          .key = &stage.key.cs,
          .prog_data = &stage.prog_data.cs,
@@ -2705,6 +2802,8 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
    anv_pipeline_account_shader(&pipeline->base, stage.bin);
    anv_pipeline_add_executables(&pipeline->base, &stage);
    pipeline->source_hash = stage.source_hash;
+
+   anv_finish_debug_archiver(debug_archiver);
 
    ralloc_free(mem_ctx);
 

@@ -32,6 +32,8 @@ subdir('blake3')
 files_mesa_util = files(
   'anon_file.h',
   'anon_file.c',
+  'archive.c',
+  'archive.h',
   'bigmath.h',
   'bitscan.c',
   'bitscan.h',
@@ -373,6 +375,7 @@ if with_tests
   endif
 
   files_util_tests = files(
+    'tests/archive_test.cpp',
     'tests/bitset_test.cpp',
     'tests/blob_test.cpp',
     'tests/dag_test.cpp',

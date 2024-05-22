@@ -41,6 +41,7 @@
 #include "dev/intel_wa.h"
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir_builder.h"
+#include "util/archive.h"
 #include "util/u_math.h"
 
 #include <memory>
@@ -2749,15 +2750,18 @@ fs_visitor::debug_optimizer(const nir_shader *nir,
    if (!brw_should_print_shader(nir, DEBUG_OPTIMIZER))
       return;
 
-   char *filename;
-   int ret = asprintf(&filename, "%s/%s%d-%s-%02d-%02d-%s",
-                      debug_get_option("INTEL_SHADER_OPTIMIZER_PATH", "./"),
-                      _mesa_shader_stage_to_abbrev(stage), dispatch_width, nir->info.name,
-                      iteration, pass_num, pass_name);
-   if (ret == -1)
+   if (!debug_writer)
       return;
-   dump_instructions(filename);
-   free(filename);
+
+   const char *filename =
+      ralloc_asprintf(mem_ctx, "%s%d-%s.brw/%02d-%02d-%s",
+                      _mesa_shader_stage_to_abbrev(nir->info.stage),
+                      dispatch_width, nir->info.name,
+                      iteration, pass_num, pass_name);
+
+   archive_writer_start_file(debug_writer, filename);
+   dump_instructions_to_file(debug_writer->file);
+   archive_writer_finish_file(debug_writer);
 }
 
 uint32_t
@@ -3789,6 +3793,27 @@ brw_nir_populate_wm_prog_data(nir_shader *shader,
    brw_compute_flat_inputs(prog_data, shader);
 }
 
+void
+brw_debug_archive_nir(const struct brw_compile_params *params)
+{
+   nir_shader *nir = params->nir;
+   if (!brw_should_print_shader(nir, DEBUG_OPTIMIZER))
+      return;
+
+   struct archive_writer *debug_writer = params->debug_writer;
+   if (!debug_writer)
+      return;
+
+   const char *filename =
+      ralloc_asprintf(params->mem_ctx, "%s-NIR-%s.nir/start-brw",
+                      _mesa_shader_stage_to_abbrev(nir->info.stage),
+                      nir->info.name);
+
+   archive_writer_start_file(debug_writer, filename);
+   nir_print_shader(nir, debug_writer->file);
+   archive_writer_finish_file(debug_writer);
+}
+
 const unsigned *
 brw_compile_fs(const struct brw_compiler *compiler,
                struct brw_compile_fs_params *params)
@@ -3807,6 +3832,8 @@ brw_compile_fs(const struct brw_compiler *compiler,
 
    const struct intel_device_info *devinfo = compiler->devinfo;
    const unsigned max_subgroup_size = 32;
+
+   brw_debug_archive_nir(&params->base);
 
    brw_nir_apply_key(nir, compiler, &key->base, max_subgroup_size);
    brw_nir_lower_fs_inputs(nir, devinfo, key);
@@ -4194,6 +4221,8 @@ brw_compile_cs(const struct brw_compiler *compiler,
       .prog_data = prog_data,
       .required_width = brw_required_dispatch_width(&nir->info),
    };
+
+   brw_debug_archive_nir(&params->base);
 
    std::unique_ptr<fs_visitor> v[3];
 

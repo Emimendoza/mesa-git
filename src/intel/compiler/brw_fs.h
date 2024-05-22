@@ -443,6 +443,8 @@ public:
 
    struct shader_stats shader_stats;
 
+   struct archive_writer *debug_writer;
+
    unsigned workgroup_size() const;
 
    void debug_optimizer(const nir_shader *nir,
