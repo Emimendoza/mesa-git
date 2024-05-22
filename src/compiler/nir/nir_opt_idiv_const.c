@@ -25,6 +25,12 @@
 #include "util/u_math.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_range_analysis.h"
+
+struct div_state {
+   struct hash_table *range_ht;
+   unsigned min_bit_size;
+};
 
 static nir_def *
 build_udiv(nir_builder *b, nir_def *n, uint64_t d)
@@ -148,7 +154,7 @@ build_imod(nir_builder *b, nir_def *n, int64_t d)
 static bool
 nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
 {
-   unsigned *min_bit_size = user_data;
+   struct div_state *state = user_data;
 
    if (instr->type != nir_instr_type_alu)
       return false;
@@ -161,7 +167,7 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
        alu->op != nir_op_irem)
       return false;
 
-   if (alu->def.bit_size < *min_bit_size)
+   if (alu->def.bit_size < state->min_bit_size)
       return false;
 
    if (!nir_src_is_const(alu->src[1].src))
@@ -196,6 +202,21 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
          q[comp] = build_udiv(b, n, d);
          break;
       case nir_op_idiv:
+         if (d > 0 && bit_size <= 32) {
+            nir_scalar scalar = { n, 0 };
+            const uint32_t bound =
+               nir_unsigned_upper_bound(b->shader, state->range_ht, scalar, NULL);
+
+            if ((int)bound > 0) {
+               /* The numerator and denominator are unsigned values, so
+                * optimize the division as unsigned.  This is always as good
+                * as or better than the signed optimization.
+                */
+               q[comp] = build_udiv(b, n, d);
+               break;
+            }
+         }
+
          q[comp] = build_idiv(b, n, d);
          break;
       case nir_op_umod:
@@ -222,8 +243,23 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
 bool
 nir_opt_idiv_const(nir_shader *shader, unsigned min_bit_size)
 {
-   return nir_shader_instructions_pass(shader, nir_opt_idiv_const_instr,
-                                       nir_metadata_block_index |
-                                          nir_metadata_dominance,
-                                       &min_bit_size);
+   struct div_state state = {
+      _mesa_pointer_hash_table_create(NULL),
+      min_bit_size
+   };
+
+   bool progress = false;
+   nir_foreach_function_impl(impl, shader) {
+      nir_metadata_require(impl, nir_metadata_dominance);
+
+      progress |= nir_function_instructions_pass(impl,
+                                                 nir_opt_idiv_const_instr,
+                                                 nir_metadata_block_index |
+                                                 nir_metadata_dominance,
+                                                 &state);
+   }
+
+   _mesa_hash_table_destroy(state.range_ht, NULL);
+
+   return progress;
 }

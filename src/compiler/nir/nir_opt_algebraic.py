@@ -126,17 +126,6 @@ optimizations = [
    (('imod', a, -1), 0),
    (('irem', a, 1), 0),
    (('irem', a, -1), 0),
-   (('udiv', a, '#b(is_pos_power_of_two)'), ('ushr', a, ('find_lsb', b)), '!options->lower_bitops'),
-   (('idiv', a, '#b(is_pos_power_of_two)'), ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', b))), '!options->lower_bitops'),
-   (('idiv', a, '#b(is_neg_power_of_two)'), ('ineg', ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', ('iabs', b))))), '!options->lower_bitops'),
-   (('umod', a, '#b(is_pos_power_of_two)'), ('iand', a, ('isub', b, 1)), '!options->lower_bitops'),
-   (('imod', a, '#b(is_pos_power_of_two)'), ('iand', a, ('isub', b, 1)), '!options->lower_bitops'),
-   (('imod', a, '#b(is_neg_power_of_two)'), ('bcsel', ('ieq', ('ior', a, b), b), 0, ('ior', a, b)), '!options->lower_bitops'),
-   # 'irem(a, b)' -> 'a - ((a < 0 ? (a + b - 1) : a) & -b)'
-   (('irem', a, '#b(is_pos_power_of_two)'),
-    ('isub', a, ('iand', ('bcsel', ('ilt', a, 0), ('iadd', a, ('isub', b, 1)), a), ('ineg', b))),
-    '!options->lower_bitops'),
-   (('irem', a, '#b(is_neg_power_of_two)'), ('irem', a, ('iabs', b)), '!options->lower_bitops'),
 
    (('~fmul', ('fsign', a), ('ffloor', ('fadd', ('fabs', a), 0.5))), ('ftrunc', ('fadd', a, ('fmul', ('fsign', a), 0.5))), '!options->lower_ftrunc || options->lower_ffloor'),
 

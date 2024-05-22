@@ -76,7 +76,17 @@ signed_integer_range_analysis(nir_shader *shader, struct hash_table *range_ht,
    }
 
    if (nir_scalar_is_alu(scalar)) {
-      switch (nir_scalar_alu_op(scalar)) {
+      const nir_op op = nir_scalar_alu_op(scalar);
+      switch (op) {
+      case nir_op_b2i8:
+      case nir_op_b2i16:
+      case nir_op_b2i32:
+         *lo = 0;
+         *hi = 1;
+
+         /* b2i operations have an implicit negation. */
+         return integer_neg;
+
       case nir_op_iabs:
          signed_integer_range_analysis(shader, range_ht,
                                        nir_scalar_chase_alu_src(scalar, 0),
@@ -149,6 +159,66 @@ signed_integer_range_analysis(nir_shader *shader, struct hash_table *range_ht,
 
          *lo = MIN2(src0_lo, src1_lo);
          *hi = MIN2(src0_hi, src1_hi);
+
+         return non_unary;
+      }
+
+      case nir_op_extract_i8:
+      case nir_op_extract_i16:
+      case nir_op_i2i32: {
+         const int32_t bound = nir_unsigned_upper_bound(shader, range_ht,
+                                                        scalar, NULL);
+         unsigned src_bit_size;
+         switch (op) {
+         case nir_op_extract_u8:
+            src_bit_size = 8;
+            break;
+         case nir_op_extract_u16:
+            src_bit_size = 16;
+            break;
+         default:
+            src_bit_size = nir_scalar_chase_alu_src(scalar, 0).def->bit_size;
+            break;
+         }
+
+         int32_t tmp_lo;
+         int32_t tmp_hi;
+
+         if (bound < 0) {
+            tmp_lo = INT32_MIN;
+            tmp_hi = INT32_MAX;
+         } else {
+            tmp_lo = 0;
+            tmp_hi = bound;
+         }
+
+         *lo = MAX2(u_intN_min(src_bit_size), tmp_lo);
+         *hi = MIN2(u_intN_max(src_bit_size), tmp_hi);
+
+         return non_unary;
+      }
+
+      case nir_op_extract_u8:
+      case nir_op_extract_u16:
+      case nir_op_u2u32: {
+         const uint32_t bound = nir_unsigned_upper_bound(shader, range_ht,
+                                                         scalar, NULL);
+
+         unsigned src_bit_size;
+         switch (op) {
+         case nir_op_extract_u8:
+            src_bit_size = 8;
+            break;
+         case nir_op_extract_u16:
+            src_bit_size = 16;
+            break;
+         default:
+            src_bit_size = nir_scalar_chase_alu_src(scalar, 0).def->bit_size;
+            break;
+         }
+
+         *lo = 0;
+         *hi = MIN2(u_uintN_max(src_bit_size), bound);
 
          return non_unary;
       }
