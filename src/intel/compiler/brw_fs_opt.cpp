@@ -83,6 +83,7 @@ brw_fs_optimize(fs_visitor &s)
       OPT(brw_fs_opt_dead_code_eliminate);
    }
 
+   OPT(brw_fs_lower_csel);
    OPT(brw_fs_lower_simd_width);
    OPT(brw_fs_lower_barycentrics);
    OPT(brw_fs_lower_logical_sends);
@@ -153,6 +154,8 @@ brw_fs_optimize(fs_visitor &s)
    OPT(brw_fs_lower_sends_overlapping_payload);
 
    OPT(brw_fs_lower_uniform_pull_constant_loads);
+
+   OPT(brw_fs_lower_indirect_mov);
 
    OPT(brw_fs_lower_find_live_channel);
 }

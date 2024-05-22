@@ -130,6 +130,80 @@ brw_fs_lower_load_payload(fs_visitor &s)
    return progress;
 }
 
+/**
+ * Lower CSEL with unsupported types to CMP+SEL.
+ *
+ * Or, for unsigned ==/!= comparisons, simply change the types.
+ */
+bool
+brw_fs_lower_csel(fs_visitor &s)
+{
+   const intel_device_info *devinfo = s.devinfo;
+   bool progress = false;
+
+   foreach_block_and_inst_safe(block, fs_inst, inst, s.cfg) {
+      if (inst->opcode != BRW_OPCODE_CSEL)
+         continue;
+
+      bool supported = false;
+      enum brw_reg_type orig_type = inst->src[2].type;
+      enum brw_reg_type new_type = orig_type;
+
+      switch (orig_type) {
+      case BRW_TYPE_F:
+         /* Gfx9 CSEL can only do F */
+         supported = true;
+         break;
+      case BRW_TYPE_HF:
+      case BRW_TYPE_W:
+      case BRW_TYPE_D:
+         /* Gfx11+ CSEL can do HF, W, and D.  Note that we can't simply
+          * retype integer ==/!= comparisons as float on earlier hardware
+          * because it breaks for 0x8000000 and 0 (-0.0 == 0.0).
+          */
+         supported = devinfo->ver >= 11;
+         break;
+      case BRW_TYPE_UW:
+      case BRW_TYPE_UD:
+         /* CSEL doesn't support UW/UD but we can simply retype to use the
+          * signed types when comparing with == or !=.
+          */
+         supported = devinfo->ver >= 11 &&
+                     (inst->conditional_mod == BRW_CONDITIONAL_EQ ||
+                      inst->conditional_mod == BRW_CONDITIONAL_NEQ);
+         new_type = inst->src[2].type == BRW_TYPE_UD ?
+                    BRW_TYPE_D : BRW_TYPE_W;
+      default:
+         break;
+      }
+
+      if (!supported) {
+         const fs_builder ibld(&s, block, inst);
+
+         /* CSEL: dst = src2 <op> 0 ? src0 : src1 */
+         fs_reg zero = brw_imm_reg(orig_type);
+         ibld.CMP(retype(ibld.null_reg_f(), orig_type),
+                  inst->src[2], zero, inst->conditional_mod);
+
+         inst->opcode = BRW_OPCODE_SEL;
+         inst->predicate = BRW_PREDICATE_NORMAL;
+         inst->conditional_mod = BRW_CONDITIONAL_NONE;
+         inst->resize_sources(2);
+         progress = true;
+      } else if (new_type != orig_type) {
+         inst->src[0].type = new_type;
+         inst->src[1].type = new_type;
+         inst->src[2].type = new_type;
+         progress = true;
+      }
+   }
+
+   if (progress)
+      s.invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+
+   return progress;
+}
+
 bool
 brw_fs_lower_sub_sat(fs_visitor &s)
 {
@@ -697,3 +771,63 @@ brw_fs_lower_vgrfs_to_fixed_grfs(fs_visitor &s)
                          DEPENDENCY_VARIABLES);
 }
 
+bool
+brw_fs_lower_indirect_mov(fs_visitor &s)
+{
+   bool progress = false;
+
+   if (s.devinfo->ver < 20)
+      return progress;
+
+   foreach_block_and_inst_safe(block, fs_inst, inst, s.cfg) {
+      if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT) {
+         if (brw_type_size_bytes(inst->src[0].type) > 1 &&
+             brw_type_size_bytes(inst->dst.type) > 1) {
+            continue;
+         }
+
+         const fs_builder ibld(&s, block, inst);
+
+         /* Indirect addressing(vx1 and vxh) not supported with UB/B datatype for
+          * Src0, so change data type for src0 and dst to W.
+          */
+         const fs_reg dst = retype(inst->dst, BRW_TYPE_UW);
+         fs_reg src0 = retype(inst->src[0], BRW_TYPE_UW);
+
+         fs_reg offset = ibld.vgrf(BRW_TYPE_UD);
+
+         /* Add src0 offset to the indirect byte offset so that we can make sure it's
+          * word-aligned.
+          */
+         ibld.ADD(offset, inst->src[1], brw_imm_uw(src0.offset));
+
+         /* Reset the src0 offset since we already added that offset to the indirect
+          * byte offset.
+          */
+         src0.offset = 0;
+
+         /* Make sure offset is word (2-bytes) aligned */
+         inst->src[1] = ibld.AND(offset, brw_imm_ud(~1));
+
+         ibld.emit(SHADER_OPCODE_MOV_INDIRECT, dst, src0, inst->src[1], inst->src[2]);
+
+         fs_reg lo = ibld.AND(dst, brw_imm_uw(0xff));
+         fs_reg hi = ibld.SHR(dst, brw_imm_uw(8));
+         fs_reg odd = ibld.AND(offset, brw_imm_ud(1));
+
+         fs_reg result = ibld.vgrf(BRW_TYPE_W);
+         /* Select high byte if offset is odd otherwise select low byte. */
+         ibld.CSEL(result, hi, lo, retype(odd, BRW_TYPE_W),
+                   BRW_CONDITIONAL_NZ);
+
+         ibld.MOV(inst->dst, retype(result, BRW_TYPE_UW));
+         inst->remove(block);
+         progress = true;
+      }
+   }
+
+   if (progress)
+      s.invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
+
+   return progress;
+}
