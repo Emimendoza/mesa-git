@@ -20,3 +20,9 @@ spill-dEQP-VK.graphicsfuzz.cov-nested-loop-undefined-smoothstep-never-executed
 # 60s timeout
 KHR-GLES31.core.tessellation_shader.tessellation_control_to_tessellation_evaluation.gl_MaxPatchVertices_Position_PointSize
 KHR-GL46.copy_image.functional
+
+# Some reconvergence tests are very slow.
+dEQP-VK.reconvergence.subgroup_uniform_control_flow_ballot.compute.nesting4.0.40
+gmem-dEQP-VK.reconvergence.subgroup_uniform_control_flow_elect.compute.nesting4.0.40
+dEQP-VK.reconvergence.workgroup_uniform_control_flow_ballot.compute.nesting4.7.10
+dEQP-VK.reconvergence.subgroup_uniform_control_flow_elect.compute.nesting4.7.10

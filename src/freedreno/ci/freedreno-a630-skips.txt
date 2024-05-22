@@ -39,3 +39,4 @@ spec@egl_khr_gl_colorspace@linear
 
 # Timeout
 dEQP-VK.memory.mapping.suballocation.full.variable.implicit_unmap
+stale-regs-dEQP-VK.reconvergence.workgroup_uniform_control_flow_ballot.compute.nesting4.7.10
