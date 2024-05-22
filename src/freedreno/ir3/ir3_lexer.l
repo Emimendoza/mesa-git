@@ -272,6 +272,7 @@ static int parse_reg(const char *str)
 
                                   /* category 5: */
 "isam"                            return TOKEN(T_OP_ISAM);
+"isam.v"                          return TOKEN(T_OP_ISAM_V);
 "isaml"                           return TOKEN(T_OP_ISAML);
 "isamm"                           return TOKEN(T_OP_ISAMM);
 "sam"                             return TOKEN(T_OP_SAM);
