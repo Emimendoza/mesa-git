@@ -3109,6 +3109,13 @@ struct anv_sparse_binding_data {
 
 #define ANV_SPARSE_BLOCK_SIZE (64 * 1024)
 
+struct anv_sparse_surf_info {
+   struct isl_surf *isl;
+   const struct isl_format_layout *layout;
+   struct isl_tile_info tile_info;
+   uint32_t tile_size;
+};
+
 static inline bool
 anv_sparse_binding_is_enabled(struct anv_device *device)
 {
@@ -3127,6 +3134,9 @@ anv_sparse_residency_is_enabled(struct anv_device *device)
           device->vk.enabled_features.sparseResidency16Samples ||
           device->vk.enabled_features.sparseResidencyAliased;
 }
+
+struct anv_sparse_surf_info
+anv_sparse_calc_surf_info(struct isl_surf *isl_surf);
 
 VkResult anv_init_sparse_bindings(struct anv_device *device,
                                   uint64_t size,
@@ -3156,10 +3166,11 @@ anv_sparse_calc_image_format_properties(struct anv_physical_device *pdevice,
                                         VkImageAspectFlags aspect,
                                         VkImageType vk_image_type,
                                         VkSampleCountFlagBits vk_samples,
-                                        struct isl_surf *surf);
+                                        struct anv_sparse_surf_info *surf);
 void anv_sparse_calc_miptail_properties(struct anv_device *device,
                                         struct anv_image *image,
                                         VkImageAspectFlags vk_aspect,
+                                        struct anv_sparse_surf_info *surf,
                                         uint32_t *imageMipTailFirstLod,
                                         VkDeviceSize *imageMipTailSize,
                                         VkDeviceSize *imageMipTailOffset,

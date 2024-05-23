@@ -2152,16 +2152,17 @@ anv_image_get_sparse_memory_requirements(
    u_foreach_bit(b, aspects) {
       VkImageAspectFlagBits aspect = 1 << b;
       const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
-      struct isl_surf *surf = &image->planes[plane].primary_surface.isl;
+      struct isl_surf *isl_surf = &image->planes[plane].primary_surface.isl;
+      struct anv_sparse_surf_info surf = anv_sparse_calc_surf_info(isl_surf);
 
       VkSparseImageFormatProperties format_props =
          anv_sparse_calc_image_format_properties(device->physical, aspect,
                                                  image->vk.image_type,
-                                                 image->vk.samples, surf);
+                                                 image->vk.samples, &surf);
 
       uint32_t miptail_first_lod;
       VkDeviceSize miptail_size, miptail_offset, miptail_stride;
-      anv_sparse_calc_miptail_properties(device, image, aspect,
+      anv_sparse_calc_miptail_properties(device, image, aspect, &surf,
                                          &miptail_first_lod, &miptail_size,
                                          &miptail_offset, &miptail_stride);
 

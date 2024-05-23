@@ -1904,11 +1904,12 @@ void anv_GetPhysicalDeviceSparseImageFormatProperties2(
          return;
       }
 
+      struct anv_sparse_surf_info surf = anv_sparse_calc_surf_info(&isl_surf);
       VkSparseImageFormatProperties format_props =
          anv_sparse_calc_image_format_properties(physical_device, aspect,
                                                  pFormatInfo->type,
                                                  pFormatInfo->samples,
-                                                 &isl_surf);
+                                                 &surf);
 
       /* If both depth and stencil are the same, unify them if possible. */
       if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |

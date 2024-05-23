@@ -48,6 +48,27 @@ sparse_debug(const char *format, ...)
    va_end(args);
 }
 
+struct anv_sparse_surf_info
+anv_sparse_calc_surf_info(struct isl_surf *isl_surf)
+{
+   struct anv_sparse_surf_info surf;
+
+   surf.isl = isl_surf;
+   surf.layout = isl_format_get_layout(isl_surf->format);
+   isl_surf_get_tile_info(isl_surf, &surf.tile_info);
+
+   const int Bpb = surf.layout->bpb / 8;
+
+   surf.tile_size = surf.tile_info.logical_extent_el.width * Bpb *
+                    surf.tile_info.logical_extent_el.height *
+                    surf.tile_info.logical_extent_el.depth *
+                    isl_surf->samples;
+   assert(isl_surf->tiling == ISL_TILING_LINEAR ||
+          surf.tile_size == 64 * 1024 || surf.tile_size == 4096);
+
+   return surf;
+}
+
 static void
 dump_anv_vm_bind(struct anv_device *device,
                  const struct anv_vm_bind *bind)
@@ -80,8 +101,10 @@ dump_anv_image(struct anv_image *i)
 }
 
 static void
-dump_isl_surf(struct isl_surf *s)
+dump_isl_surf(struct anv_sparse_surf_info *surf)
 {
+   struct isl_surf *s = surf->isl;
+
    if (!INTEL_DEBUG(DEBUG_SPARSE))
       return;
 
@@ -114,25 +137,24 @@ dump_isl_surf(struct isl_surf *s)
    sparse_debug("- row_pitch_B: %u\n", s->row_pitch_B);
    sparse_debug("- array_pitch_el_rows: %u\n", s->array_pitch_el_rows);
 
-   const struct isl_format_layout *layout = isl_format_get_layout(s->format);
+   const struct isl_format_layout *layout = surf->layout;
    sparse_debug("- format layout:\n");
    sparse_debug("  - format:%d bpb:%d bw:%d bh:%d bd:%d\n",
                 layout->format, layout->bpb, layout->bw, layout->bh,
                 layout->bd);
 
-   struct isl_tile_info tile_info;
-   isl_surf_get_tile_info(s, &tile_info);
+   struct isl_tile_info *tile_info = &surf->tile_info;
 
    sparse_debug("- tile info:\n");
-   sparse_debug("  - format_bpb: %d\n", tile_info.format_bpb);
+   sparse_debug("  - format_bpb: %d\n", tile_info->format_bpb);
    sparse_debug("  - logical_extent_el: [%d, %d, %d, %d]\n",
-                tile_info.logical_extent_el.w,
-                tile_info.logical_extent_el.h,
-                tile_info.logical_extent_el.d,
-                tile_info.logical_extent_el.a);
+                tile_info->logical_extent_el.w,
+                tile_info->logical_extent_el.h,
+                tile_info->logical_extent_el.d,
+                tile_info->logical_extent_el.a);
    sparse_debug("  - phys_extent_B: [%d, %d]\n",
-                tile_info.phys_extent_B.w,
-                tile_info.phys_extent_B.h);
+                tile_info->phys_extent_B.w,
+                tile_info->phys_extent_B.h);
 }
 
 static VkOffset3D
@@ -729,35 +751,20 @@ anv_free_sparse_bindings(struct anv_device *device,
 
 static VkExtent3D
 anv_sparse_calc_block_shape(struct anv_physical_device *pdevice,
-                            struct isl_surf *surf)
+                            struct anv_sparse_surf_info *surf)
 {
-   const struct isl_format_layout *layout =
-      isl_format_get_layout(surf->format);
-   const int Bpb = layout->bpb / 8;
-
-   struct isl_tile_info tile_info;
-   isl_surf_get_tile_info(surf, &tile_info);
+   struct isl_surf *isl_surf = surf->isl;
+   const struct isl_format_layout *layout = surf->layout;
+   struct isl_tile_info *tile_info = &surf->tile_info;
 
    VkExtent3D block_shape_el = {
-      .width = tile_info.logical_extent_el.width,
-      .height = tile_info.logical_extent_el.height,
-      .depth = tile_info.logical_extent_el.depth,
+      .width = tile_info->logical_extent_el.width,
+      .height = tile_info->logical_extent_el.height,
+      .depth = tile_info->logical_extent_el.depth,
    };
    VkExtent3D block_shape_px = vk_extent3d_el_to_px(block_shape_el, layout);
 
-   if (surf->tiling == ISL_TILING_LINEAR) {
-      uint32_t elements_per_row = surf->row_pitch_B /
-                                  (block_shape_el.width * Bpb);
-      uint32_t rows_per_tile = ANV_SPARSE_BLOCK_SIZE /
-                               (elements_per_row * Bpb);
-      assert(rows_per_tile * elements_per_row * Bpb == ANV_SPARSE_BLOCK_SIZE);
-
-      block_shape_px = (VkExtent3D) {
-         .width = elements_per_row * layout->bw,
-         .height = rows_per_tile * layout->bh,
-         .depth = layout->bd,
-      };
-   }
+   assert(isl_surf->tiling != ISL_TILING_LINEAR);
 
    return block_shape_px;
 }
@@ -767,62 +774,59 @@ anv_sparse_calc_image_format_properties(struct anv_physical_device *pdevice,
                                         VkImageAspectFlags aspect,
                                         VkImageType vk_image_type,
                                         VkSampleCountFlagBits vk_samples,
-                                        struct isl_surf *surf)
+                                        struct anv_sparse_surf_info *surf)
 {
-   const struct isl_format_layout *isl_layout =
-      isl_format_get_layout(surf->format);
+   const struct isl_surf *isl_surf = surf->isl;
+   const struct isl_format_layout *isl_layout = surf->layout;
    const int bpb = isl_layout->bpb;
    assert(bpb == 8 || bpb == 16 || bpb == 32 || bpb == 64 ||bpb == 128);
-   const int Bpb = bpb / 8;
 
    VkExtent3D granularity = anv_sparse_calc_block_shape(pdevice, surf);
    bool is_standard = false;
    bool is_known_nonstandard_format = false;
 
-   if (vk_image_type != VK_IMAGE_TYPE_1D) {
-      VkExtent3D std_shape =
-         anv_sparse_get_standard_image_block_shape(surf->format,
-                                                   vk_image_type, vk_samples,
-                                                   bpb);
-      /* YUV formats don't work with Tile64, which is required if we want to
-       * claim standard block shapes. The spec requires us to support all
-       * non-compressed color formats that non-sparse supports, so we can't
-       * just say YUV formats are not supported by Sparse. So we end
-       * supporting this format and anv_sparse_calc_miptail_properties() will
-       * say that everything is part of the miptail.
-       *
-       * For more details on the hardware restriction, please check
-       * isl_gfx125_filter_tiling().
-       */
-      if (pdevice->info.verx10 >= 125 && isl_format_is_yuv(surf->format))
-         is_known_nonstandard_format = true;
+   /* We shouldn't be able to reach this function with a 1D image. */
+   assert(vk_image_type != VK_IMAGE_TYPE_1D);
 
-      /* The standard block shapes (and by extension, the tiling formats they
-       * require) are simply incompatible with getting a 2D view of a 3D
-       * image.
-       */
-      if (surf->usage & ISL_SURF_USAGE_2D_3D_COMPATIBLE_BIT)
-         is_known_nonstandard_format = true;
+   VkExtent3D std_shape =
+      anv_sparse_get_standard_image_block_shape(isl_surf->format,
+                                                vk_image_type, vk_samples,
+                                                bpb);
+   /* YUV formats don't work with Tile64, which is required if we want to
+    * claim standard block shapes. The spec requires us to support all
+    * non-compressed color formats that non-sparse supports, so we can't just
+    * say YUV formats are not supported by Sparse. So we end supporting this
+    * format and anv_sparse_calc_miptail_properties() will say that everything
+    * is part of the miptail.
+    *
+    * For more details on the hardware restriction, please check
+    * isl_gfx125_filter_tiling().
+    */
+   if (pdevice->info.verx10 >= 125 && isl_format_is_yuv(isl_surf->format))
+      is_known_nonstandard_format = true;
 
-      is_standard = granularity.width == std_shape.width &&
-                    granularity.height == std_shape.height &&
-                    granularity.depth == std_shape.depth;
+   /* The standard block shapes (and by extension, the tiling formats they
+    * require) are simply incompatible with getting a 2D view of a 3D image.
+    */
+   if (isl_surf->usage & ISL_SURF_USAGE_2D_3D_COMPATIBLE_BIT)
+      is_known_nonstandard_format = true;
 
-      /* TODO: dEQP seems to care about the block shapes being standard even
-       * for the cases where is_known_nonstandard_format is true. Luckily as
-       * of today all of those cases are NotSupported but sooner or later we
-       * may end up getting a failure.
-       * Notice that in practice we report these cases as having the mip tail
-       * starting on mip level 0, so the reported block shapes are irrelevant
-       * since non-opaque binds are not supported. Still, dEQP seems to care.
-       */
-      assert(is_standard || is_known_nonstandard_format);
-      assert(!(is_standard && is_known_nonstandard_format));
-   }
+   is_standard = granularity.width == std_shape.width &&
+                 granularity.height == std_shape.height &&
+                 granularity.depth == std_shape.depth;
 
-   uint32_t block_size = granularity.width * granularity.height *
-                         granularity.depth * Bpb;
-   bool wrong_block_size = block_size != ANV_SPARSE_BLOCK_SIZE;
+   /* TODO: dEQP seems to care about the block shapes being standard even for
+    * the cases where is_known_nonstandard_format is true. Luckily as of today
+    * all of those cases are NotSupported but sooner or later we may end up
+    * getting a failure.
+    * Notice that in practice we report these cases as having the mip tail
+    * starting on mip level 0, so the reported block shapes are irrelevant
+    * since non-opaque binds are not supported. Still, dEQP seems to care.
+    */
+   assert(is_standard || is_known_nonstandard_format);
+   assert(!(is_standard && is_known_nonstandard_format));
+
+   bool wrong_block_size = surf->tile_size != ANV_SPARSE_BLOCK_SIZE;
 
    return (VkSparseImageFormatProperties) {
       .aspectMask = aspect,
@@ -861,23 +865,17 @@ void
 anv_sparse_calc_miptail_properties(struct anv_device *device,
                                    struct anv_image *image,
                                    VkImageAspectFlags vk_aspect,
+                                   struct anv_sparse_surf_info *surf,
                                    uint32_t *imageMipTailFirstLod,
                                    VkDeviceSize *imageMipTailSize,
                                    VkDeviceSize *imageMipTailOffset,
                                    VkDeviceSize *imageMipTailStride)
 {
    const uint32_t plane = anv_image_aspect_to_plane(image, vk_aspect);
-   struct isl_surf *surf = &image->planes[plane].primary_surface.isl;
+   struct isl_surf *isl_surf = surf->isl;
    uint64_t binding_plane_offset =
       image->planes[plane].primary_surface.memory_range.offset;
-   const struct isl_format_layout *isl_layout =
-      isl_format_get_layout(surf->format);
-   const int Bpb = isl_layout->bpb / 8;
-   struct isl_tile_info tile_info;
-   isl_surf_get_tile_info(surf, &tile_info);
-   uint32_t tile_size = tile_info.logical_extent_el.width * Bpb *
-                        tile_info.logical_extent_el.height *
-                        tile_info.logical_extent_el.depth;
+   uint32_t tile_size = surf->tile_size;
 
    uint64_t layer1_offset;
    uint32_t x_off, y_off;
@@ -894,12 +892,12 @@ anv_sparse_calc_miptail_properties(struct anv_device *device,
    if (tile_size != ANV_SPARSE_BLOCK_SIZE)
       goto out_everything_is_miptail;
 
-   assert(surf->tiling != ISL_TILING_LINEAR);
+   assert(isl_surf->tiling != ISL_TILING_LINEAR);
 
    if (image->vk.array_layers == 1) {
-      layer1_offset = surf->size_B;
+      layer1_offset = isl_surf->size_B;
    } else {
-      isl_surf_get_image_offset_B_tile_sa(surf, 0, 1, 0, &layer1_offset,
+      isl_surf_get_image_offset_B_tile_sa(isl_surf, 0, 1, 0, &layer1_offset,
                                           &x_off, &y_off);
       if (x_off || y_off)
          goto out_everything_is_miptail;
@@ -909,15 +907,15 @@ anv_sparse_calc_miptail_properties(struct anv_device *device,
    /* We could try to do better here, but there's not really any point since
     * we should be supporting the appropriate tiling formats everywhere.
     */
-   if (!isl_tiling_supports_standard_block_shapes(surf->tiling))
+   if (!isl_tiling_supports_standard_block_shapes(isl_surf->tiling))
       goto out_everything_is_miptail;
 
-   int miptail_first_level = surf->miptail_start_level;
+   int miptail_first_level = isl_surf->miptail_start_level;
    if (miptail_first_level >= image->vk.mip_levels)
       goto out_no_miptail;
 
    uint64_t miptail_offset = 0;
-   isl_surf_get_image_offset_B_tile_sa(surf, miptail_first_level, 0, 0,
+   isl_surf_get_image_offset_B_tile_sa(isl_surf, miptail_first_level, 0, 0,
                                        &miptail_offset,
                                        &x_off, &y_off);
    assert(x_off == 0 && y_off == 0);
@@ -938,7 +936,7 @@ out_no_miptail:
 
 out_everything_is_miptail:
    *imageMipTailFirstLod = 0;
-   *imageMipTailSize = surf->size_B;
+   *imageMipTailSize = isl_surf->size_B;
    *imageMipTailOffset = binding_plane_offset;
    *imageMipTailStride = 0;
 
@@ -1014,6 +1012,22 @@ anv_sparse_bind_image_opaque(struct anv_device *device,
       &image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN];
    assert(!image->disjoint);
 
+   if (INTEL_DEBUG(DEBUG_SPARSE)) {
+      sparse_debug("%s:\n", __func__);
+      dump_anv_image(image);
+      u_foreach_bit(b, image->vk.aspects) {
+         VkImageAspectFlagBits aspect = 1 << b;
+         const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
+         sparse_debug("aspect 0x%x (plane %d)\n", aspect, plane);
+         struct isl_surf *isl_surf =
+            &image->planes[plane].primary_surface.isl;
+         struct anv_sparse_surf_info surf =
+            anv_sparse_calc_surf_info(isl_surf);
+         dump_isl_surf(&surf);
+      }
+      sparse_debug("\n");
+   }
+
    return anv_sparse_bind_resource_memory(device, &b->sparse_data,
                                           b->memory_range.size,
                                           vk_bind, submit);
@@ -1038,14 +1052,14 @@ anv_sparse_bind_image_memory(struct anv_queue *queue,
    struct anv_sparse_binding_data *sparse_data = &img_binding->sparse_data;
 
    const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
-   struct isl_surf *surf = &image->planes[plane].primary_surface.isl;
+   struct isl_surf *isl_surf = &image->planes[plane].primary_surface.isl;
+   struct anv_sparse_surf_info surf = anv_sparse_calc_surf_info(isl_surf);
    uint64_t binding_plane_offset =
       image->planes[plane].primary_surface.memory_range.offset;
-   const struct isl_format_layout *layout =
-      isl_format_get_layout(surf->format);
+   const struct isl_format_layout *layout = surf.layout;
 
    if (INTEL_DEBUG(DEBUG_SPARSE)) {
-      sparse_debug("%s:", __func__);
+      sparse_debug("%s:\n", __func__);
       sparse_debug("mip_level:%d array_layer:%d\n", mip_level, array_layer);
       sparse_debug("aspect:0x%x plane:%d\n", aspect, plane);
       sparse_debug("binding offset: [%d, %d, %d] extent: [%d, %d, %d]\n",
@@ -1053,12 +1067,12 @@ anv_sparse_bind_image_memory(struct anv_queue *queue,
                    bind->extent.width, bind->extent.height,
                    bind->extent.depth);
       dump_anv_image(image);
-      dump_isl_surf(surf);
+      dump_isl_surf(&surf);
       sparse_debug("\n");
    }
 
    VkExtent3D block_shape_px =
-      anv_sparse_calc_block_shape(device->physical, surf);
+      anv_sparse_calc_block_shape(device->physical, &surf);
    VkExtent3D block_shape_el = vk_extent3d_px_to_el(block_shape_px, layout);
 
    /* Both bind->offset and bind->extent are in pixel units. */
@@ -1078,14 +1092,11 @@ anv_sparse_bind_image_memory(struct anv_queue *queue,
 
    /* A sparse block should correspond to our tile size, so this has to be
     * either 4k or 64k depending on the tiling format. */
-   const uint64_t block_size_B = block_shape_el.width * (layout->bpb / 8) *
-                                 block_shape_el.height *
-                                 block_shape_el.depth *
-                                 image->vk.samples;
-   assert(block_size_B == (64 * 1024) || block_size_B == 4096);
+   const uint64_t block_size_B = surf.tile_size;
 
    /* How many blocks are necessary to form a whole line on this image? */
-   const uint32_t blocks_per_line = surf->row_pitch_B / (layout->bpb / 8) /
+   const uint32_t blocks_per_line = isl_surf->row_pitch_B /
+                                    (layout->bpb / 8) /
                                     block_shape_el.width;
    /* The loop below will try to bind a whole line of blocks at a time as
     * they're guaranteed to be contiguous, so we calculate how many blocks
@@ -1104,7 +1115,7 @@ anv_sparse_bind_image_memory(struct anv_queue *queue,
         z += block_shape_el.depth) {
       uint64_t subresource_offset_B;
       uint32_t subresource_x_offset, subresource_y_offset;
-      isl_surf_get_image_offset_B_tile_sa(surf, mip_level, array_layer, z,
+      isl_surf_get_image_offset_B_tile_sa(isl_surf, mip_level, array_layer, z,
                                           &subresource_offset_B,
                                           &subresource_x_offset,
                                           &subresource_y_offset);
@@ -1166,6 +1177,9 @@ anv_sparse_image_check_support(struct anv_physical_device *pdevice,
     */
    if (!(flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT))
       return VK_SUCCESS;
+
+   if (type == VK_IMAGE_TYPE_1D)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    /* From here on, these are the rules:
     *   "A sparse image created using VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT
