@@ -10,7 +10,7 @@ gallium_nine_c_args = []
 gallium_nine_ld_args = []
 gallium_nine_link_depends = []
 gallium_nine_link_with = [
-    libgallium, libnine_st,
+    libgallium, libgalliumvl_stub, libnine_st,
     libpipe_loader_static, libws_null, libwsw, libswdri,
     libswkmsdri,
 ]
@@ -18,13 +18,6 @@ gallium_nine_link_with = [
 if with_ld_version_script
   gallium_nine_ld_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'd3dadapter9.sym')]
   gallium_nine_link_depends += files('d3dadapter9.sym')
-endif
-
-if (with_gallium_va or with_gallium_vdpau or with_gallium_omx != 'disabled' or
-    with_dri)
-  gallium_nine_link_with += libgalliumvl
-else
-  gallium_nine_link_with += libgalliumvl_stub
 endif
 
 libgallium_nine = shared_library(
