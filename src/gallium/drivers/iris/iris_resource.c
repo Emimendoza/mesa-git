@@ -902,8 +902,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
       } else if (res->mod_info && res->mod_info->supports_media_compression) {
          res->aux.usage = ISL_AUX_USAGE_MC;
       } else if (want_ccs_e_for_format(devinfo, res->surf.format)) {
-         res->aux.usage = devinfo->ver < 12 ?
-            ISL_AUX_USAGE_CCS_E : ISL_AUX_USAGE_FCV_CCS_E;
+         res->aux.usage = intel_needs_workaround(devinfo, 1607794140) ?
+            ISL_AUX_USAGE_FCV_CCS_E : ISL_AUX_USAGE_CCS_E;
       } else {
          assert(isl_format_supports_ccs_d(devinfo, res->surf.format));
          res->aux.usage = ISL_AUX_USAGE_CCS_D;
@@ -1031,6 +1031,63 @@ iris_resource_create_for_buffer(struct pipe_screen *pscreen,
    return &res->base.b;
 }
 
+static bool
+iris_resource_image_supports_pat_compression(const struct iris_screen *screen,
+                                             const struct pipe_resource *templ,
+                                             struct iris_resource *res,
+                                             unsigned flags)
+{
+   assert(templ->target != PIPE_BUFFER);
+
+   if (INTEL_DEBUG(DEBUG_NO_CCS))
+      return false;
+
+   if (screen->devinfo->ver < 20)
+      return false;
+
+   if (flags & (BO_ALLOC_PROTECTED |
+                BO_ALLOC_COHERENT |
+                BO_ALLOC_CPU_VISIBLE))
+      return false;
+
+   struct iris_bufmgr *bufmgr = screen->bufmgr;
+   if ((iris_bufmgr_vram_size(bufmgr) > 0) && (flags & BO_ALLOC_SMEM))
+      return false;
+
+   /* We don't have modifiers with compression enabled on Xe2 so far. */
+   if (res->mod_info && res->mod_info->modifier != DRM_FORMAT_MOD_INVALID)
+      return false;
+
+   if (isl_surf_usage_is_depth(res->surf.usage))
+      return false;
+
+   /* Bspec 58797:
+    *
+    *    Enabling compression is not legal for TileX surfaces.
+    */
+   if (res->surf.tiling == ISL_TILING_X)
+      return false;
+
+   /* Bspec 71650:
+    *
+    *    3 SW  must disable or resolve compression
+    *       Display: Access to anything except Tile4 Framebuffers...
+    *          Display Page Tables
+    *          Display State Buffers
+    *          Linear/TileX Framebuffers
+    *          Display Write-Back Buffers
+    *          Etc.
+    *
+    * So far, we don't support resolving on Xe2 and may not want to enable
+    * compression under these conditions later, so we only enable it when
+    * a TILING_4 image is to display.
+    */
+   if ((flags & BO_ALLOC_SCANOUT) && res->surf.tiling != ISL_TILING_4)
+      return false;
+
+   return true;
+}
+
 static struct pipe_resource *
 iris_resource_create_for_image(struct pipe_screen *pscreen,
                                const struct pipe_resource *templ,
@@ -1077,6 +1134,9 @@ iris_resource_create_for_image(struct pipe_screen *pscreen,
    enum iris_memory_zone memzone = IRIS_MEMZONE_OTHER;
 
    unsigned flags = iris_resource_alloc_flags(screen, templ, res);
+
+   if (iris_resource_image_supports_pat_compression(screen, templ, res, flags))
+      flags |= BO_ALLOC_COMPRESSED;
 
    /* These are for u_upload_mgr buffers only */
    assert(!(templ->flags & (IRIS_RESOURCE_FLAG_SHADER_MEMZONE |

@@ -210,7 +210,20 @@ get_fast_clear_rect(const struct isl_device *dev,
 
    /* Only single sampled surfaces need to (and actually can) be resolved. */
    if (surf->samples == 1) {
-      if (dev->info->verx10 >= 125) {
+      const uint32_t bs = isl_format_get_layout(surf->format)->bpb / 8;
+      if (dev->info->ver >= 20) {
+         /* From Bspec 57340, "MCS/CCS Buffers, Fast Clear for Render Target(s)":
+          *
+          *    Table "Tile4/Tile64 2D/2D Array/Cube Surface"
+          *    Table "Tile64 3D/Volumetric"
+          *
+          * The below calculation is derived from these tables.
+          */
+         assert(surf->tiling == ISL_TILING_4
+                || surf->tiling == ISL_TILING_64_XE2);
+         x_align = x_scaledown = 64 / bs;
+         y_align = y_scaledown = 4;
+      } else if (dev->info->verx10 >= 125) {
          /* From Bspec 47709, "MCS/CCS Buffer for Render Target(s)":
           *
           *    SW must ensure that clearing rectangle dimensions cover the
@@ -221,7 +234,6 @@ get_fast_clear_rect(const struct isl_device *dev,
           * The X and Y scale down factors in the table that follows are used
           * for both alignment and scaling down.
           */
-         const uint32_t bs = isl_format_get_layout(surf->format)->bpb / 8;
 
          if (surf->tiling == ISL_TILING_4) {
             x_align = x_scaledown = 1024 / bs;
@@ -388,8 +400,6 @@ blorp_fast_clear(struct blorp_batch *batch,
    params.y0 = y0;
    params.x1 = x1;
    params.y1 = y1;
-
-   memset(&params.wm_inputs.clear_color, 0xff, 4*sizeof(float));
    params.fast_clear_op = ISL_AUX_OP_FAST_CLEAR;
 
    get_fast_clear_rect(batch->blorp->isl_dev, surf->surf, surf->aux_surf,
@@ -400,6 +410,23 @@ blorp_fast_clear(struct blorp_batch *batch,
 
    blorp_surface_info_init(batch, &params.dst, surf, level,
                                start_layer, format, true);
+
+   if (batch->blorp->isl_dev->info->ver >= 20)
+      /* Xe2 doesn't have clear color bo and address but expects a constant
+       * output by clearing pixel shader, so we set new clear color value in
+       * the wm_inputs.
+       */
+      memcpy(&params.wm_inputs.clear_color, &surf->clear_color,
+            4 * sizeof(float));
+   else
+      /* From the BSpec: 2423  Render Target Fast Clear:
+       *
+       *    The pixel shader kernel requires no attributes, and delivers a
+       *    value of 0xFFFFFFFF in all channels of the render target write
+       *    message The replicated color message should be used.
+       */
+      memset(&params.wm_inputs.clear_color, 0xff, 4*sizeof(float));
+
    params.num_samples = params.dst.surf.samples;
 
    assert(params.num_samples != 0);

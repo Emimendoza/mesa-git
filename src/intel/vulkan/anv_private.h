@@ -440,6 +440,9 @@ enum anv_bo_alloc_flags {
 
    /** For descriptor buffer pools */
    ANV_BO_ALLOC_DESCRIPTOR_BUFFER_POOL =  (1 << 21),
+
+   /** Compressed buffer, only supported in Xe2+ */
+   ANV_BO_ALLOC_COMPRESSED =              (1 << 22),
 };
 
 /** Specifies that the BO should be cached and coherent. */
@@ -965,7 +968,8 @@ struct anv_memory_type {
    VkMemoryPropertyFlags   propertyFlags;
    uint32_t                heapIndex;
    /* Whether this is the descriptor buffer memory type */
-   bool                    descriptor_buffer;
+   bool                    descriptor_buffer : 1;
+   bool                    compressed : 1;
 };
 
 struct anv_memory_heap {
@@ -1125,6 +1129,8 @@ struct anv_physical_device {
       uint32_t                                  desc_buffer_mem_types;
       /** Mask of memory types of protected buffers/images */
       uint32_t                                  protected_mem_types;
+      /** Mask of memory types of compressed buffers/images */
+      uint32_t                                  compressed_mem_types;
     } memory;
 
     struct {
@@ -5356,6 +5362,9 @@ anv_image_get_fast_clear_type_addr(const struct anv_device *device,
    struct anv_address addr =
       anv_image_get_clear_color_addr(device, image, aspect);
 
+   if (anv_address_is_null(addr))
+      return addr;
+
    unsigned clear_color_state_size;
    if (device->info->ver >= 11) {
       /* The fast clear type and the first compression state are stored in the
@@ -5380,6 +5389,12 @@ anv_image_get_compression_state_addr(const struct anv_device *device,
    UNUSED uint32_t plane = anv_image_aspect_to_plane(image, aspect);
    assert(isl_aux_usage_has_ccs_e(image->planes[plane].aux_usage));
 
+   struct anv_address addr =
+      anv_image_get_fast_clear_type_addr(device, image, aspect);
+
+   if (anv_address_is_null(addr))
+      return addr;
+
    /* Relative to start of the plane's fast clear type */
    uint32_t offset;
 
@@ -5396,9 +5411,7 @@ anv_image_get_compression_state_addr(const struct anv_device *device,
 
    assert(offset < image->planes[plane].fast_clear_memory_range.size);
 
-   return anv_address_add(
-      anv_image_get_fast_clear_type_addr(device, image, aspect),
-      offset);
+   return anv_address_add(addr, offset);
 }
 
 static inline const struct anv_image_memory_range *

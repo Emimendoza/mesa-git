@@ -623,6 +623,12 @@ add_aux_state_tracking_buffer(struct anv_device *device,
                               uint64_t state_offset,
                               uint32_t plane)
 {
+   /* Indirect clear color feature has been removed since Xe2. Tracking
+    * compression state in this buffer is not needed either.
+    */
+   if (device->info->ver >= 20)
+      return VK_SUCCESS;
+
    assert(image && device);
    assert(image->planes[plane].aux_usage != ISL_AUX_USAGE_NONE &&
           image->vk.aspects & (VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV |
@@ -1995,6 +2001,36 @@ resolve_ahw_image(struct anv_device *device,
 #endif
 }
 
+static bool
+anv_image_supports_pat_compression(struct anv_device *device,
+                                   struct anv_image *image)
+{
+   if (INTEL_DEBUG(DEBUG_NO_CCS))
+      return false;
+
+   if (device->info->ver < 20)
+      return false;
+
+   /* There are no compression-enabled modifiers on Xe2, and all legacy
+    * modifiers are not defined with compression. We simply disable
+    * compression on all modifiers.
+    */
+   if (image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
+      return false;
+
+   for (uint32_t plane = 0; plane < image->n_planes; plane++) {
+      const struct isl_surf *surf =
+         &image->planes[plane].primary_surface.isl;
+      if (surf && isl_surf_usage_is_depth(surf->usage)) {
+         anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
+                       "Disable PAT-based compression on depth images.");
+         return false;
+      }
+   }
+
+   return true;
+}
+
 void
 anv_image_get_memory_requirements(struct anv_device *device,
                                   struct anv_image *image,
@@ -2008,10 +2044,13 @@ anv_image_get_memory_requirements(struct anv_device *device,
     *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
     *    structure for the physical device is supported.
     */
-   uint32_t memory_types =
-      (image->vk.create_flags & VK_IMAGE_CREATE_PROTECTED_BIT) ?
-      device->physical->memory.protected_mem_types :
-      device->physical->memory.default_buffer_mem_types;
+   uint32_t memory_types = device->physical->memory.default_buffer_mem_types;;
+
+   if (image->vk.create_flags & VK_IMAGE_CREATE_PROTECTED_BIT)
+      memory_types |= device->physical->memory.protected_mem_types;
+
+   if (anv_image_supports_pat_compression(device, image))
+      memory_types |= device->physical->memory.compressed_mem_types;
 
    vk_foreach_struct(ext, pMemoryRequirements->pNext) {
       switch (ext->sType) {
