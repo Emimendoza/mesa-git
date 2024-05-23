@@ -33,8 +33,6 @@
 #include <limits.h> // PATH_MAX
 #endif
 
-#include <drm-uapi/i915_drm.h>
-
 #include "common/intel_gem.h"
 #include "common/i915/intel_gem.h"
 
@@ -42,11 +40,16 @@
 #include "dev/intel_device_info.h"
 
 #include "perf/i915/intel_perf.h"
+#include "perf/xe/intel_perf.h"
 #include "perf/intel_perf.h"
+#include "perf/intel_perf_common.h"
 #include "perf/intel_perf_regs.h"
 #include "perf/intel_perf_mdapi.h"
 #include "perf/intel_perf_metrics.h"
 #include "perf/intel_perf_private.h"
+
+#include "perf/i915/intel_perf.h"
+#include "perf/xe/intel_perf.h"
 
 #include "util/bitscan.h"
 #include "util/macros.h"
@@ -133,27 +136,6 @@ get_sysfs_dev_dir(struct intel_perf_config *perf, int fd)
        maj, min);
 
    return false;
-}
-
-static bool
-read_file_uint64(const char *file, uint64_t *val)
-{
-    char buf[32];
-    int fd, n;
-
-    fd = open(file, 0);
-    if (fd < 0)
-       return false;
-    while ((n = read(fd, buf, sizeof (buf) - 1)) < 0 &&
-           errno == EINTR);
-    close(fd);
-    if (n < 0)
-       return false;
-
-    buf[n] = '\0';
-    *val = strtoull(buf, NULL, 0);
-
-    return true;
 }
 
 static bool
@@ -259,43 +241,15 @@ add_all_metrics(struct intel_perf_config *perf,
 static bool
 kernel_has_dynamic_config_support(struct intel_perf_config *perf, int fd)
 {
-   uint64_t invalid_config_id = UINT64_MAX;
-
-   return intel_ioctl(fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG,
-                    &invalid_config_id) < 0 && errno == ENOENT;
-}
-
-static bool
-i915_query_perf_config_supported(struct intel_perf_config *perf, int fd)
-{
-   int32_t length = 0;
-   return !intel_i915_query_flags(fd, DRM_I915_QUERY_PERF_CONFIG,
-                                  DRM_I915_QUERY_PERF_CONFIG_LIST,
-                                  NULL, &length);
-}
-
-static bool
-i915_query_perf_config_data(struct intel_perf_config *perf,
-                            int fd, const char *guid,
-                            struct drm_i915_perf_oa_config *config)
-{
-   char data[sizeof(struct drm_i915_query_perf_config) +
-             sizeof(struct drm_i915_perf_oa_config)] = {};
-   struct drm_i915_query_perf_config *i915_query = (void *)data;
-   struct drm_i915_perf_oa_config *i915_config = (void *)data + sizeof(*i915_query);
-
-   memcpy(i915_query->uuid, guid, sizeof(i915_query->uuid));
-   memcpy(i915_config, config, sizeof(*config));
-
-   int32_t item_length = sizeof(data);
-   if (intel_i915_query_flags(fd, DRM_I915_QUERY_PERF_CONFIG,
-                              DRM_I915_QUERY_PERF_CONFIG_DATA_FOR_UUID,
-                              i915_query, &item_length))
+   switch (perf->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_has_dynamic_config_support(perf, fd);
+   case INTEL_KMD_TYPE_XE:
+      return true;
+   default:
+      unreachable("missing");
       return false;
-
-   memcpy(config, i915_config, sizeof(*config));
-
-   return true;
+   }
 }
 
 bool
@@ -313,25 +267,19 @@ intel_perf_load_metric_id(struct intel_perf_config *perf_cfg,
 }
 
 static uint64_t
-i915_add_config(struct intel_perf_config *perf, int fd,
-                const struct intel_perf_registers *config,
-                const char *guid)
+kmd_add_config(struct intel_perf_config *perf, int fd,
+               const struct intel_perf_registers *config,
+               const char *guid)
 {
-   struct drm_i915_perf_oa_config i915_config = { 0, };
-
-   memcpy(i915_config.uuid, guid, sizeof(i915_config.uuid));
-
-   i915_config.n_mux_regs = config->n_mux_regs;
-   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
-
-   i915_config.n_boolean_regs = config->n_b_counter_regs;
-   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
-
-   i915_config.n_flex_regs = config->n_flex_regs;
-   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
-
-   int ret = intel_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
-   return ret > 0 ? ret : 0;
+   switch (perf->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_add_config(perf, fd, config, guid);
+   case INTEL_KMD_TYPE_XE:
+      return xe_add_config(perf, fd, config, guid);
+   default:
+      unreachable("missing");
+      return 0;
+   }
 }
 
 static void
@@ -348,7 +296,7 @@ init_oa_configs(struct intel_perf_config *perf, int fd,
          continue;
       }
 
-      uint64_t ret = i915_add_config(perf, fd, &query->config, query->guid);
+      uint64_t ret = kmd_add_config(perf, fd, &query->config, query->guid);
       if (ret == 0) {
          DBG("Failed to load \"%s\" (%s) metrics set in kernel: %s\n",
              query->name, query->guid, strerror(errno));
@@ -413,10 +361,26 @@ init_oa_sys_vars(struct intel_perf_config *perf,
    uint64_t min_freq_mhz = 0, max_freq_mhz = 0;
 
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
-      if (!read_sysfs_drm_device_file_uint64(perf, "gt_min_freq_mhz", &min_freq_mhz))
+      const char *min_file, *max_file;
+
+      switch (perf->devinfo->kmd_type) {
+      case INTEL_KMD_TYPE_I915:
+         min_file = "gt_min_freq_mhz";
+         max_file = "gt_max_freq_mhz";
+         break;
+      case INTEL_KMD_TYPE_XE:
+         min_file = "device/tile0/gt0/freq0/min_freq";
+         max_file = "device/tile0/gt0/freq0/max_freq";
+         break;
+      default:
+         unreachable("missing");
+         return false;
+      }
+
+      if (!read_sysfs_drm_device_file_uint64(perf, min_file, &min_freq_mhz))
          return false;
 
-      if (!read_sysfs_drm_device_file_uint64(perf,  "gt_max_freq_mhz", &max_freq_mhz))
+      if (!read_sysfs_drm_device_file_uint64(perf, max_file, &max_freq_mhz))
          return false;
    } else {
       min_freq_mhz = 300;
@@ -607,26 +571,6 @@ load_pipeline_statistic_metrics(struct intel_perf_config *perf_cfg,
    sort_query(query);
 }
 
-static int
-i915_perf_version(int drm_fd)
-{
-   int tmp = 0;
-   intel_gem_get_param(drm_fd, I915_PARAM_PERF_REVISION, &tmp);
-   return tmp;
-}
-
-static void
-i915_get_sseu(int drm_fd, struct drm_i915_gem_context_param_sseu *sseu)
-{
-   struct drm_i915_gem_context_param arg = {
-      .param = I915_CONTEXT_PARAM_SSEU,
-      .size = sizeof(*sseu),
-      .value = to_user_pointer(sseu)
-   };
-
-   intel_ioctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg);
-}
-
 static inline int
 compare_str_or_null(const char *s1, const char *s2)
 {
@@ -719,24 +663,17 @@ oa_metrics_available(struct intel_perf_config *perf, int fd,
                      bool use_register_snapshots)
 {
    perf_register_oa_queries_t oa_register = get_register_queries_function(devinfo);
-   bool i915_perf_oa_available = false;
-   struct stat sb;
-
-   /* TODO: Xe still don't have support for performance metrics */
-   if (devinfo->kmd_type != INTEL_KMD_TYPE_I915)
-      return false;
+   bool oa_metrics_available = false;
 
    perf->devinfo = devinfo;
 
    /* Consider an invalid as supported. */
    if (fd == -1) {
-      perf->i915_query_supported = true;
+      perf->features_supported = INTEL_PERF_FEATURE_QUERY_PERF;
       return true;
    }
 
-   perf->i915_query_supported = i915_query_perf_config_supported(perf, fd);
    perf->enable_all_metrics = debug_get_bool_option("INTEL_EXTENDED_METRICS", false);
-   perf->i915_perf_version = i915_perf_version(fd);
 
    /* TODO: We should query this from i915 */
    if (devinfo->verx10 >= 125)
@@ -745,30 +682,19 @@ oa_metrics_available(struct intel_perf_config *perf, int fd,
    perf->oa_timestamp_mask =
       0xffffffffffffffffull >> (32 + perf->oa_timestamp_shift);
 
-   /* Record the default SSEU configuration. */
-   i915_get_sseu(fd, &perf->sseu);
-
-   /* The existence of this sysctl parameter implies the kernel supports
-    * the i915 perf interface.
-    */
-   if (stat("/proc/sys/dev/i915/perf_stream_paranoid", &sb) == 0) {
-
-      /* If _paranoid == 1 then on Gfx8+ we won't be able to access OA
-       * metrics unless running as root.
-       */
-      if (devinfo->platform == INTEL_PLATFORM_HSW)
-         i915_perf_oa_available = true;
-      else {
-         uint64_t paranoid = 1;
-
-         read_file_uint64("/proc/sys/dev/i915/perf_stream_paranoid", &paranoid);
-
-         if (paranoid == 0 || geteuid() == 0)
-            i915_perf_oa_available = true;
-      }
+   switch (devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      oa_metrics_available = i915_oa_metrics_available(perf, fd, use_register_snapshots);
+      break;
+   case INTEL_KMD_TYPE_XE:
+      oa_metrics_available = xe_oa_metrics_available(perf, fd, use_register_snapshots);
+      break;
+   default:
+      unreachable("missing");
+      break;
    }
 
-   return i915_perf_oa_available &&
+   return oa_metrics_available &&
           oa_register &&
           get_sysfs_dev_dir(perf, fd) &&
           init_oa_sys_vars(perf, use_register_snapshots);
@@ -818,37 +744,67 @@ load_oa_metrics(struct intel_perf_config *perf, int fd,
       perf->fallback_raw_oa_metric = perf->queries[perf->n_queries - 1].oa_metrics_set_id;
 }
 
-struct intel_perf_registers *
-intel_perf_load_configuration(struct intel_perf_config *perf_cfg, int fd, const char *guid)
+static struct intel_perf_registers *
+local_load_configuration(struct intel_perf_config *perf_cfg, const char *guid)
 {
-   if (!perf_cfg->i915_query_supported)
+   struct intel_perf_query_info *query;
+   struct intel_perf_registers *config;
+   bool found = false;
+   int i;
+
+   for (i = 0; i < perf_cfg->n_queries; i++) {
+      query = &perf_cfg->queries[i];
+
+      if (strcmp(query->guid, guid) == 0) {
+         found = true;
+         break;
+      }
+   }
+
+   if (!found)
       return NULL;
 
-   struct drm_i915_perf_oa_config i915_config = { 0, };
-   if (!i915_query_perf_config_data(perf_cfg, fd, guid, &i915_config))
+   config = rzalloc(NULL, struct intel_perf_registers);
+   if (!config)
       return NULL;
 
-   struct intel_perf_registers *config = rzalloc(NULL, struct intel_perf_registers);
-   config->n_flex_regs = i915_config.n_flex_regs;
+   config->n_flex_regs = query->config.n_flex_regs;
    config->flex_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_flex_regs);
-   config->n_mux_regs = i915_config.n_mux_regs;
+   config->n_mux_regs = query->config.n_mux_regs;
    config->mux_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_mux_regs);
-   config->n_b_counter_regs = i915_config.n_boolean_regs;
+   config->n_b_counter_regs = query->config.n_b_counter_regs;
    config->b_counter_regs = rzalloc_array(config, struct intel_perf_query_register_prog, config->n_b_counter_regs);
 
-   /*
-    * struct intel_perf_query_register_prog maps exactly to the tuple of
-    * (register offset, register value) returned by the i915.
-    */
-   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
-   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
-   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
-   if (!i915_query_perf_config_data(perf_cfg, fd, guid, &i915_config)) {
+   if (!config->flex_regs || !config->mux_regs || !config->b_counter_regs) {
       ralloc_free(config);
       return NULL;
    }
 
+   memcpy((void *)config->flex_regs, query->config.flex_regs, sizeof(uint64_t) * config->n_flex_regs);
+   memcpy((void *)config->mux_regs, query->config.mux_regs, sizeof(uint64_t) * config->n_mux_regs);
+   memcpy((void *)config->b_counter_regs, query->config.b_counter_regs, sizeof(uint64_t) * config->n_b_counter_regs);
+
    return config;
+}
+
+struct intel_perf_registers *
+intel_perf_load_configuration(struct intel_perf_config *perf_cfg, int fd, const char *guid)
+{
+   struct intel_perf_registers *ret = local_load_configuration(perf_cfg, guid);
+
+   if (ret)
+      return ret;
+
+   if (!(perf_cfg->features_supported & INTEL_PERF_FEATURE_QUERY_PERF))
+      return NULL;
+
+   switch (perf_cfg->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_perf_load_configurations(perf_cfg, fd, guid);
+   default:
+      unreachable("missing");
+      return NULL;
+   }
 }
 
 uint64_t
@@ -857,7 +813,7 @@ intel_perf_store_configuration(struct intel_perf_config *perf_cfg, int fd,
                                const char *guid)
 {
    if (guid)
-      return i915_add_config(perf_cfg, fd, config, guid);
+      return kmd_add_config(perf_cfg, fd, config, guid);
 
    struct mesa_sha1 sha1_ctx;
    _mesa_sha1_init(&sha1_ctx);
@@ -896,7 +852,23 @@ intel_perf_store_configuration(struct intel_perf_config *perf_cfg, int fd,
    if (intel_perf_load_metric_id(perf_cfg, generated_guid, &id))
       return id;
 
-   return i915_add_config(perf_cfg, fd, config, generated_guid);
+   return kmd_add_config(perf_cfg, fd, config, generated_guid);
+}
+
+void
+intel_perf_remove_configuration(struct intel_perf_config *perf_cfg, int fd,
+                                uint64_t config_id)
+{
+   switch (perf_cfg->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      i915_remove_config(perf_cfg, fd, config_id);
+      break;
+   case INTEL_KMD_TYPE_XE:
+      xe_remove_config(perf_cfg, fd, config_id);
+      break;
+   default:
+      unreachable("missing");
+   }
 }
 
 static void
@@ -1142,8 +1114,12 @@ intel_perf_query_result_accumulate(struct intel_perf_query_result *result,
    result->end_timestamp = intel_perf_report_timestamp(query, end);
    result->reports_accumulated++;
 
-   switch (query->oa_format) {
-   case I915_OA_FORMAT_A24u40_A14u32_B8_C8:
+   /* oa format handling needs to match with platform version returned in
+    * intel_perf_get_oa_format()
+    */
+   assert(intel_perf_get_oa_format(query->perf) == query->oa_format);
+   if (query->perf->devinfo->verx10 > 120) {
+      /* I915_OA_FORMAT_A24u40_A14u32_B8_C8 */
       result->accumulator[query->gpu_time_offset] =
          intel_perf_report_timestamp(query, end) -
          intel_perf_report_timestamp(query, start);
@@ -1201,9 +1177,8 @@ intel_perf_query_result_accumulate(struct intel_perf_query_result *result,
                               result->accumulator + query->c_offset + i);
          }
       }
-      break;
-
-   case I915_OA_FORMAT_A32u40_A4u32_B8_C8:
+   } else if (query->perf->devinfo->verx10 > 75) {
+      /* I915_OA_FORMAT_A32u40_A4u32_B8_C8 */
       result->accumulator[query->gpu_time_offset] =
          intel_perf_report_timestamp(query, end) -
          intel_perf_report_timestamp(query, start);
@@ -1237,9 +1212,8 @@ intel_perf_query_result_accumulate(struct intel_perf_query_result *result,
                               result->accumulator + query->c_offset + i);
          }
       }
-      break;
-
-   case I915_OA_FORMAT_A45_B8_C8:
+   } else {
+      /* I915_OA_FORMAT_A24u40_A14u32_B8_C8 */
       result->accumulator[query->gpu_time_offset] =
          intel_perf_report_timestamp(query, end) -
          intel_perf_report_timestamp(query, start);
@@ -1248,12 +1222,7 @@ intel_perf_query_result_accumulate(struct intel_perf_query_result *result,
          accumulate_uint32(start + 3 + i, end + 3 + i,
                            result->accumulator + query->a_offset + i);
       }
-      break;
-
-   default:
-      unreachable("Can't accumulate OA counters in unknown format");
    }
-
 }
 
 #define GET_FIELD(word, field) (((word)  & field ## _MASK) >> field ## _SHIFT)
@@ -1575,6 +1544,8 @@ intel_perf_get_oa_format(struct intel_perf_config *perf_cfg)
    switch (perf_cfg->devinfo->kmd_type) {
    case INTEL_KMD_TYPE_I915:
       return i915_perf_get_oa_format(perf_cfg);
+   case INTEL_KMD_TYPE_XE:
+      return xe_perf_get_oa_format(perf_cfg);
    default:
       unreachable("missing");
       return 0;
@@ -1594,8 +1565,66 @@ intel_perf_stream_open(struct intel_perf_config *perf_config, int drm_fd,
       return i915_perf_stream_open(perf_config, drm_fd, ctx_id, metrics_set_id,
                                    report_format, period_exponent,
                                    hold_preemption, enable);
+   case INTEL_KMD_TYPE_XE:
+      return xe_perf_stream_open(perf_config, drm_fd, ctx_id, metrics_set_id,
+                                 report_format, period_exponent,
+                                 hold_preemption, enable);
    default:
          unreachable("missing");
          return 0;
+   }
+}
+
+int
+intel_perf_stream_set_state(struct intel_perf_config *perf_config,
+                            int perf_stream_fd, bool enable)
+{
+   switch (perf_config->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_perf_stream_set_state(perf_stream_fd, enable);
+   case INTEL_KMD_TYPE_XE:
+      return xe_perf_stream_set_state(perf_stream_fd, enable);
+   default:
+         unreachable("missing");
+         return -1;
+   }
+}
+
+int
+intel_perf_stream_set_metrics_id(struct intel_perf_config *perf_config,
+                                 int perf_stream_fd, uint64_t metrics_set_id)
+{
+   switch (perf_config->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_perf_stream_set_metrics_id(perf_stream_fd, metrics_set_id);
+   case INTEL_KMD_TYPE_XE:
+      return xe_perf_stream_set_metrics_id(perf_stream_fd, metrics_set_id);
+   default:
+         unreachable("missing");
+         return -1;
+   }
+}
+
+/*
+ * Read perf stream samples.
+ *
+ * buffer will be filled with multiple struct intel_perf_record_header + data.
+ *
+ * Returns 0 if no sample is available, -errno value if a error happened or
+ * the number of bytes read on success.
+ */
+int
+intel_perf_stream_read_samples(struct intel_perf_config *perf_config,
+                               int perf_stream_fd, uint8_t *buffer,
+                               size_t buffer_len)
+{
+   switch (perf_config->devinfo->kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return i915_perf_stream_read_samples(perf_stream_fd, buffer, buffer_len);
+   case INTEL_KMD_TYPE_XE:
+      return xe_perf_stream_read_samples(perf_stream_fd, buffer, buffer_len);
+   default:
+         unreachable("missing");
+         return -1;
    }
 }

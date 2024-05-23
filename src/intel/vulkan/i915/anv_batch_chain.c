@@ -50,8 +50,6 @@ struct anv_execbuf {
 
    const VkAllocationCallbacks *             alloc;
    VkSystemAllocationScope                   alloc_scope;
-
-   int                                       perf_query_pass;
 };
 
 static void
@@ -796,7 +794,6 @@ i915_queue_exec_locked(struct anv_queue *queue,
    struct anv_execbuf execbuf = {
       .alloc = &queue->device->vk.alloc,
       .alloc_scope = VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
-      .perf_query_pass = perf_query_pass,
    };
    VkResult result;
 
@@ -888,8 +885,9 @@ i915_queue_exec_locked(struct anv_queue *queue,
       if (!INTEL_DEBUG(DEBUG_NO_OACONFIG) &&
           (query_info->kind == INTEL_PERF_QUERY_TYPE_OA ||
            query_info->kind == INTEL_PERF_QUERY_TYPE_RAW)) {
-         int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
-                               (void *)(uintptr_t) query_info->oa_metrics_set_id);
+         int ret = intel_perf_stream_set_metrics_id(device->physical->perf,
+                                                    device->perf_fd,
+                                                    query_info->oa_metrics_set_id);
          if (ret < 0) {
             result = vk_device_set_lost(&device->vk,
                                         "i915-perf config failed: %s",
