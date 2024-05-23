@@ -347,6 +347,7 @@ rusticl_c = static_library(
   ],
   gnu_symbol_visibility : 'hidden',
   include_directories : [
+    meson.build_root(),
     inc_gallium,
     inc_gallium_aux,
     inc_include,
