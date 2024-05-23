@@ -357,6 +357,8 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
       }
    }
 
+   NIR_PASS_V(nir, ac_nir_lower_wrmask);
+
    si_nir_opts(sscreen, nir, true);
    /* Run late optimizations to fuse ffma and eliminate 16-bit conversions. */
    si_nir_late_opts(nir);

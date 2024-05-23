@@ -312,6 +312,9 @@ ac_nir_store_debug_log_amd(nir_builder *b, nir_def *uvec4);
 bool
 ac_nir_opt_pack_half(nir_shader *shader, enum amd_gfx_level gfx_level);
 
+bool
+ac_nir_lower_wrmask(nir_shader *shader);
+
 #ifdef __cplusplus
 }
 #endif

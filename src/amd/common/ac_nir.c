@@ -1506,3 +1506,25 @@ ac_nir_opt_pack_half(nir_shader *shader, enum amd_gfx_level gfx_level)
    }
    return progress;
 }
+
+static bool
+ac_lower_wrmask_filter(const nir_instr *instr, const void *)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+   switch (intr->intrinsic) {
+   /* nir_to_llvm doesn't handle wrmask for global stores */
+   case nir_intrinsic_store_global:
+      return true;
+   default:
+      return false;
+   }
+}
+
+bool
+ac_nir_lower_wrmask(nir_shader *shader)
+{
+   return nir_lower_wrmasks(shader, ac_lower_wrmask_filter, NULL);
+}
