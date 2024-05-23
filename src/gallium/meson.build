@@ -21,11 +21,15 @@
 
 sym_config = configuration_data()
 
-foreach d : [[with_gallium_r300 or with_gallium_radeonsi or with_gallium_r600, 'radeon_drm_winsys_create'],
-             [with_gallium_radeonsi, 'amdgpu_winsys_create'],
-             [with_gallium_nouveau, 'nouveau_drm_screen_create'],
-             [with_gallium_freedreno, 'fd_drm_screen_create_renderonly'],
-             [with_llvm and with_gallium_radeonsi, 'ac_init_shared_llvm_once']]
+foreach d : [
+  [with_gallium_r300 or with_gallium_radeonsi or with_gallium_r600, 'radeon_drm_winsys_create'],
+  [with_gallium_radeonsi, 'amdgpu_winsys_create'],
+  [with_gallium_nouveau, 'nouveau_drm_screen_create'],
+  [with_gallium_freedreno, 'fd_drm_screen_create_renderonly'],
+  [with_llvm and with_gallium_radeonsi, 'ac_init_shared_llvm_once'],
+  [_omx == 'bellagio', 'omx_component_library_Setup'],
+  [_omx == 'tizonia', 'OMX_ComponentInit'],
+]
   if d[0]
     sym_config.set(d[1], d[1] + ';')
   else

@@ -27,14 +27,15 @@ va_link_depends = []
 va_drivers = []
 
 va_sym = configure_file(input : 'va.sym.in', output : 'va.sym', configuration : sym_config)
+dri_dyn = configure_file(input : '../dri.dyn.in', output : 'dri.dyn', configuration : sym_config)
 
 if with_ld_version_script
   va_link_args += ['-Wl,--version-script', join_paths(meson.current_build_dir(), 'va.sym')]
   va_link_depends += va_sym
 endif
 if with_ld_dynamic_list
-  va_link_args += ['-Wl,--dynamic-list', join_paths(meson.current_source_dir(), '../dri.dyn')]
-  va_link_depends += files('../dri.dyn')
+  va_link_args += ['-Wl,--dynamic-list', join_paths(meson.current_build_dir(), 'dri.dyn')]
+  va_link_depends += dri_dyn
 endif
 
 link_with_libva_gallium = [
