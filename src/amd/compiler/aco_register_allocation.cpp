@@ -54,45 +54,6 @@ struct assignment {
    }
 };
 
-struct ra_ctx {
-
-   Program* program;
-   Block* block = NULL;
-   std::vector<assignment> assignments;
-   std::vector<std::unordered_map<unsigned, Temp>> renames;
-   std::vector<uint32_t> loop_header;
-   std::unordered_map<unsigned, Temp> orig_names;
-   std::unordered_map<unsigned, Instruction*> vectors;
-   std::unordered_map<unsigned, Instruction*> split_vectors;
-   aco_ptr<Instruction> pseudo_dummy;
-   aco_ptr<Instruction> phi_dummy;
-   uint16_t max_used_sgpr = 0;
-   uint16_t max_used_vgpr = 0;
-   uint16_t sgpr_limit;
-   uint16_t vgpr_limit;
-   std::bitset<512> war_hint;
-
-   uint16_t sgpr_bounds;
-   uint16_t vgpr_bounds;
-   uint16_t num_linear_vgprs;
-
-   ra_test_policy policy;
-
-   ra_ctx(Program* program_, ra_test_policy policy_)
-       : program(program_), assignments(program->peekAllocationId()),
-         renames(program->blocks.size()), policy(policy_)
-   {
-      pseudo_dummy.reset(create_instruction(aco_opcode::p_parallelcopy, Format::PSEUDO, 0, 0));
-      phi_dummy.reset(create_instruction(aco_opcode::p_linear_phi, Format::PSEUDO, 0, 0));
-      sgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
-      vgpr_limit = get_addr_vgpr_from_waves(program, program->min_waves);
-
-      sgpr_bounds = program->max_reg_demand.sgpr;
-      vgpr_bounds = program->max_reg_demand.vgpr;
-      num_linear_vgprs = 0;
-   }
-};
-
 /* Iterator type for making PhysRegInterval compatible with range-based for */
 struct PhysRegIterator {
    using difference_type = int;
@@ -122,6 +83,47 @@ struct PhysRegIterator {
    bool operator!=(PhysRegIterator oth) const { return reg != oth.reg; }
 
    bool operator<(PhysRegIterator oth) const { return reg < oth.reg; }
+};
+
+struct ra_ctx {
+
+   Program* program;
+   Block* block = NULL;
+   std::vector<assignment> assignments;
+   std::vector<std::unordered_map<unsigned, Temp>> renames;
+   std::vector<uint32_t> loop_header;
+   std::unordered_map<unsigned, Temp> orig_names;
+   std::unordered_map<unsigned, Instruction*> vectors;
+   std::unordered_map<unsigned, Instruction*> split_vectors;
+   aco_ptr<Instruction> pseudo_dummy;
+   aco_ptr<Instruction> phi_dummy;
+   uint16_t max_used_sgpr = 0;
+   uint16_t max_used_vgpr = 0;
+   uint16_t sgpr_limit;
+   uint16_t vgpr_limit;
+   std::bitset<512> war_hint;
+   PhysRegIterator rr_sgpr_it;
+   PhysRegIterator rr_vgpr_it;
+
+   uint16_t sgpr_bounds;
+   uint16_t vgpr_bounds;
+   uint16_t num_linear_vgprs;
+
+   ra_test_policy policy;
+
+   ra_ctx(Program* program_, ra_test_policy policy_)
+       : program(program_), assignments(program->peekAllocationId()),
+         renames(program->blocks.size()), policy(policy_)
+   {
+      pseudo_dummy.reset(create_instruction(aco_opcode::p_parallelcopy, Format::PSEUDO, 0, 0));
+      phi_dummy.reset(create_instruction(aco_opcode::p_linear_phi, Format::PSEUDO, 0, 0));
+      sgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
+      vgpr_limit = get_addr_vgpr_from_waves(program, program->min_waves);
+
+      sgpr_bounds = program->max_reg_demand.sgpr;
+      vgpr_bounds = program->max_reg_demand.vgpr;
+      num_linear_vgprs = 0;
+   }
 };
 
 /* Half-open register interval used in "sliding window"-style for-loops */
@@ -895,88 +897,45 @@ update_renames(ra_ctx& ctx, RegisterFile& reg_file,
 std::optional<PhysReg>
 get_reg_simple(ra_ctx& ctx, const RegisterFile& reg_file, DefInfo info)
 {
-   const PhysRegInterval& bounds = info.bounds;
+   PhysRegInterval bounds = info.bounds;
    uint32_t size = info.size;
    uint32_t stride = info.rc.is_subdword() ? DIV_ROUND_UP(info.stride, 4) : info.stride;
    RegClass rc = info.rc;
 
-   DefInfo new_info = info;
-   new_info.rc = RegClass(rc.type(), size);
-   for (unsigned new_stride = 16; new_stride > stride; new_stride /= 2) {
-      if (size % new_stride)
-         continue;
-      new_info.stride = new_stride;
-      std::optional<PhysReg> res = get_reg_simple(ctx, reg_file, new_info);
-      if (res)
-         return res;
+   if (stride < size && !rc.is_subdword()) {
+      DefInfo new_info = info;
+      new_info.stride = stride * 2;
+      if (size % new_info.stride == 0) {
+         std::optional<PhysReg> res = get_reg_simple(ctx, reg_file, new_info);
+         if (res)
+            return res;
+      }
+   }
+
+   PhysRegIterator& rr_it = rc.type() == RegType::vgpr ? ctx.rr_vgpr_it : ctx.rr_sgpr_it;
+   if (stride == 1) {
+      if (rr_it != bounds.begin() && bounds.contains(rr_it.reg)) {
+         assert(bounds.begin() < rr_it);
+         assert(rr_it < bounds.end());
+         info.bounds = PhysRegInterval::from_until(rr_it.reg, bounds.hi());
+         std::optional<PhysReg> res = get_reg_simple(ctx, reg_file, info);
+         if (res)
+            return res;
+         bounds = PhysRegInterval::from_until(bounds.lo(), rr_it.reg);
+      }
    }
 
    auto is_free = [&](PhysReg reg_index)
    { return reg_file[reg_index] == 0 && !ctx.war_hint[reg_index]; };
 
-   if (stride == 1) {
-      /* best fit algorithm: find the smallest gap to fit in the variable */
-      PhysRegInterval best_gap{PhysReg{0}, UINT_MAX};
-      const unsigned max_gpr =
-         (rc.type() == RegType::vgpr) ? (256 + ctx.max_used_vgpr) : ctx.max_used_sgpr;
-
-      PhysRegIterator reg_it = bounds.begin();
-      const PhysRegIterator end_it =
-         std::min(bounds.end(), std::max(PhysRegIterator{PhysReg{max_gpr + 1}}, reg_it));
-      while (reg_it != bounds.end()) {
-         /* Find the next chunk of available register slots */
-         reg_it = std::find_if(reg_it, end_it, is_free);
-         auto next_nonfree_it = std::find_if_not(reg_it, end_it, is_free);
-         if (reg_it == bounds.end()) {
-            break;
-         }
-
-         if (next_nonfree_it == end_it) {
-            /* All registers past max_used_gpr are free */
-            next_nonfree_it = bounds.end();
-         }
-
-         PhysRegInterval gap = PhysRegInterval::from_until(*reg_it, *next_nonfree_it);
-
-         /* early return on exact matches */
-         if (size == gap.size) {
-            adjust_max_used_regs(ctx, rc, gap.lo());
-            return gap.lo();
-         }
-
-         /* check if it fits and the gap size is smaller */
-         if (size < gap.size && gap.size < best_gap.size) {
-            best_gap = gap;
-         }
-
-         /* Move past the processed chunk */
-         reg_it = next_nonfree_it;
-      }
-
-      if (best_gap.size == UINT_MAX)
-         return {};
-
-      /* find best position within gap by leaving a good stride for other variables*/
-      unsigned buffer = best_gap.size - size;
-      if (buffer > 1) {
-         if (((best_gap.lo() + size) % 8 != 0 && (best_gap.lo() + buffer) % 8 == 0) ||
-             ((best_gap.lo() + size) % 4 != 0 && (best_gap.lo() + buffer) % 4 == 0) ||
-             ((best_gap.lo() + size) % 2 != 0 && (best_gap.lo() + buffer) % 2 == 0))
-            best_gap = {PhysReg{best_gap.lo() + buffer}, best_gap.size - buffer};
-      }
-
-      adjust_max_used_regs(ctx, rc, best_gap.lo());
-      return best_gap.lo();
-   }
-
    for (PhysRegInterval reg_win = {bounds.lo(), size}; reg_win.hi() <= bounds.hi();
         reg_win += stride) {
-      if (reg_file[reg_win.lo()] != 0) {
-         continue;
-      }
-
-      bool is_valid = std::all_of(std::next(reg_win.begin()), reg_win.end(), is_free);
-      if (is_valid) {
+      if (std::all_of(reg_win.begin(), reg_win.end(), is_free)) {
+         if (stride == 1) {
+            PhysRegIterator new_rr_it{PhysReg{reg_win.lo() + size}};
+            if (new_rr_it < bounds.end())
+               rr_it = new_rr_it;
+         }
          adjust_max_used_regs(ctx, rc, reg_win.lo());
          return reg_win.lo();
       }
@@ -992,10 +951,11 @@ get_reg_simple(ra_ctx& ctx, const RegisterFile& reg_file, DefInfo info)
          if (!bounds.contains({PhysReg{entry.first}, rc.size()}))
             continue;
 
+         auto it = entry.second.begin();
          for (unsigned i = 0; i < 4; i += info.stride) {
             /* check if there's a block of free bytes large enough to hold the register */
             bool reg_found =
-               std::all_of(&entry.second[i], &entry.second[std::min(4u, i + rc.bytes())],
+               std::all_of(std::next(it, i), std::next(it, std::min(4u, i + rc.bytes())),
                            [](unsigned v) { return v == 0; });
 
             /* check if also the neighboring reg is free if needed */
@@ -1804,6 +1764,16 @@ get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
          return *res;
    }
 
+   if (temp.size() == 1 && operand_index == -1) {
+      for (const Operand& op : instr->operands) {
+         if (op.isTemp() && op.isFirstKill() && op.regClass() == temp.regClass()) {
+            assert(op.isFixed());
+            if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, op.physReg()))
+               return op.physReg();
+         }
+      }
+   }
+
    DefInfo info(ctx, instr, temp.regClass(), operand_index);
 
    if (!ctx.policy.skip_optimistic_path) {
@@ -1851,7 +1821,7 @@ get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
 
       unsigned killed_op_size = 0;
       for (Operand op : instr->operands) {
-         if (op.isTemp() && op.isKillBeforeDef() && op.regClass().type() == info.rc.type())
+         if (op.isTemp() && op.isFirstKillBeforeDef() && op.regClass().type() == info.rc.type())
             killed_op_size += op.regClass().size();
       }
 
@@ -1868,7 +1838,7 @@ get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
       /* reallocate killed operands */
       std::vector<IDAndRegClass> killed_op_vars;
       for (Operand op : instr->operands) {
-         if (op.isKillBeforeDef() && op.regClass().type() == info.rc.type())
+         if (op.isFirstKillBeforeDef() && op.regClass().type() == info.rc.type())
             killed_op_vars.emplace_back(op.tempId(), op.regClass());
       }
       compact_relocate_vars(ctx, killed_op_vars, parallelcopies, space);
@@ -2973,6 +2943,8 @@ register_allocation(Program* program, live& live_vars, ra_test_policy policy)
       /* initialize register file */
       RegisterFile register_file = init_reg_file(ctx, live_out_per_block, block);
       ctx.war_hint.reset();
+      ctx.rr_vgpr_it = {PhysReg{256}};
+      ctx.rr_sgpr_it = {PhysReg{0}};
 
       std::vector<aco_ptr<Instruction>> instructions;
       instructions.reserve(block.instructions.size());
