@@ -91,7 +91,6 @@ iris_apply_brw_wm_prog_data(struct iris_compiled_shader *shader,
    iris->urb_setup_attribs_count = brw->urb_setup_attribs_count;
 
    iris->num_varying_inputs   = brw->num_varying_inputs;
-   iris->msaa_flags_param     = brw->msaa_flags_param;
    iris->flat_inputs          = brw->flat_inputs;
    iris->inputs               = brw->inputs;
    iris->computed_depth_mode  = brw->computed_depth_mode;
@@ -235,9 +234,9 @@ iris_apply_brw_prog_data(struct iris_compiled_shader *shader,
 {
    STATIC_ASSERT(ARRAY_SIZE(brw->ubo_ranges) == ARRAY_SIZE(shader->ubo_ranges));
    for (int i = 0; i < ARRAY_SIZE(shader->ubo_ranges); i++) {
-      shader->ubo_ranges[i].block  = brw->ubo_ranges[i].block;
-      shader->ubo_ranges[i].start  = brw->ubo_ranges[i].start;
-      shader->ubo_ranges[i].length = brw->ubo_ranges[i].length;
+      shader->ubo_ranges[i].block    = brw->ubo_ranges[i].block;
+      shader->ubo_ranges[i].start_B  = brw->ubo_ranges[i].start_B;
+      shader->ubo_ranges[i].length_B = brw->ubo_ranges[i].length_B;
    }
 
    shader->nr_params              = brw->nr_params;
@@ -293,7 +292,6 @@ iris_apply_elk_wm_prog_data(struct iris_compiled_shader *shader,
    iris->urb_setup_attribs_count = elk->urb_setup_attribs_count;
 
    iris->num_varying_inputs   = elk->num_varying_inputs;
-   iris->msaa_flags_param     = elk->msaa_flags_param;
    iris->flat_inputs          = elk->flat_inputs;
    iris->inputs               = elk->inputs;
    iris->computed_depth_mode  = elk->computed_depth_mode;
@@ -435,9 +433,9 @@ iris_apply_elk_prog_data(struct iris_compiled_shader *shader,
 {
    STATIC_ASSERT(ARRAY_SIZE(elk->ubo_ranges) == ARRAY_SIZE(shader->ubo_ranges));
    for (int i = 0; i < ARRAY_SIZE(shader->ubo_ranges); i++) {
-      shader->ubo_ranges[i].block  = elk->ubo_ranges[i].block;
-      shader->ubo_ranges[i].start  = elk->ubo_ranges[i].start;
-      shader->ubo_ranges[i].length = elk->ubo_ranges[i].length;
+      shader->ubo_ranges[i].block    = elk->ubo_ranges[i].block;
+      shader->ubo_ranges[i].start_B  = elk->ubo_ranges[i].start * 32;
+      shader->ubo_ranges[i].length_B = elk->ubo_ranges[i].length * 32;
    }
 
    shader->nr_params              = elk->nr_params;

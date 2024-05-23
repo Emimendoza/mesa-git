@@ -241,8 +241,7 @@ fs_visitor::emit_interpolation_setup()
       const fs_builder dbld =
          abld.exec_all().group(MIN2(16, dispatch_width) * 2, 0);
 
-      check_dynamic_msaa_flag(dbld, wm_prog_data,
-                              INTEL_MSAA_FLAG_COARSE_RT_WRITES);
+      check_dynamic_msaa_flag(dbld, INTEL_MSAA_FLAG_COARSE_RT_WRITES);
 
       int_pixel_offset_x = dbld.vgrf(BRW_TYPE_UW);
       set_predicate(BRW_PREDICATE_NORMAL,
@@ -469,10 +468,8 @@ fs_visitor::emit_interpolation_setup()
          uint8_t *sample_barys = fs_payload().barycentric_coord_reg[sample_mode];
          assert(barys[0] && sample_barys[0]);
 
-         if (!loaded_flag) {
-            check_dynamic_msaa_flag(ubld, wm_prog_data,
-                                    INTEL_MSAA_FLAG_PERSAMPLE_INTERP);
-         }
+         if (!loaded_flag)
+            check_dynamic_msaa_flag(ubld, INTEL_MSAA_FLAG_PERSAMPLE_INTERP);
 
          for (unsigned j = 0; j < dispatch_width / 8; j++) {
             set_predicate(
@@ -543,12 +540,18 @@ fs_visitor::emit_single_fb_write(const fs_builder &bld,
    if (nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
       src_stencil = frag_stencil;
 
-   const fs_reg sources[] = {
-      color0, color1, src0_alpha, src_depth, dst_depth, src_stencil,
-      (prog_data->uses_omask ? sample_mask : fs_reg()),
-      brw_imm_ud(components)
-   };
-   assert(ARRAY_SIZE(sources) - 1 == FB_WRITE_LOGICAL_SRC_COMPONENTS);
+   fs_reg sources[FB_WRITE_LOGICAL_NUM_SRCS];
+   sources[FB_WRITE_LOGICAL_SRC_COLOR0] = color0;
+   sources[FB_WRITE_LOGICAL_SRC_COLOR1] = color1;
+   sources[FB_WRITE_LOGICAL_SRC_SRC0_ALPHA] = src0_alpha;
+   sources[FB_WRITE_LOGICAL_SRC_SRC_DEPTH] = src_depth;
+   sources[FB_WRITE_LOGICAL_SRC_DST_DEPTH] = dst_depth;
+   sources[FB_WRITE_LOGICAL_SRC_SRC_STENCIL] = src_stencil;
+   sources[FB_WRITE_LOGICAL_SRC_COMPONENTS] = brw_imm_ud(components);
+   if (prog_data->uses_omask)
+      sources[FB_WRITE_LOGICAL_SRC_OMASK] = sample_mask;
+   if (prog_data->coarse_pixel_dispatch == BRW_SOMETIMES)
+      sources[FB_WRITE_LOGICAL_MSAA_FLAGS] = dynamic_msaa_flags(bld);
    fs_inst *write = bld.emit(FS_OPCODE_FB_WRITE_LOGICAL, fs_reg(),
                              sources, ARRAY_SIZE(sources));
 
@@ -1020,6 +1023,92 @@ fs_visitor::emit_cs_terminate()
    send->eot = true;
 }
 
+fs_reg
+fs_visitor::uniform_reg(unsigned block, unsigned offset_B, unsigned length_B,
+                        brw_reg_type type) const
+{
+   for (const auto &r : constant_ranges) {
+      if (block != r.block)
+         continue;
+
+      if (offset_B + length_B < r.offset_B)
+         continue;
+      if (offset_B + length_B > r.offset_B + r.length_B)
+         continue;
+
+      return byte_offset(fs_reg(UNIFORM, r.reg_offset, type), offset_B - r.offset_B);
+   }
+
+   return fs_reg();
+}
+
+fs_reg
+fs_visitor::param_reg(const struct brw_push_param &param)
+{
+   return uniform_reg(param.block, param.offset_B, 4, BRW_TYPE_UD);
+}
+
+fs_reg
+fs_visitor::get_constant_payload_reg(uint16_t block, uint32_t offset_B,
+                                     brw_reg_type type)
+{
+   fs_reg reg;
+
+   for (const auto &r : constant_ranges) {
+      if (r.block != block)
+         continue;
+
+      if (offset_B < r.offset_B ||
+          offset_B > (r.offset_B + r.length_B))
+         continue;
+
+      return retype(byte_offset(brw_vec1_grf(payload().num_regs + r.reg_offset, 0),
+                                offset_B - r.offset_B),
+                    type);
+   }
+
+   /* Section 5.11 of the OpenGL 4.1 spec says: "Out-of-bounds reads return
+    * undefined values, which include values from other variables of the
+    * active program or zero." Just return the first push constant.
+    */
+   return retype(brw_vec1_grf(payload().num_regs, 0), type);
+}
+
+fs_reg
+fs_visitor::get_constant_payload_reg(fs_reg uniform)
+{
+   fs_reg reg;
+
+   if (gl_shader_stage_is_compute(stage) &&
+       brw_cs_prog_data(prog_data)->uses_inline_data) {
+      reg = byte_offset(retype(brw_vec1_grf(payload().num_regs, 0),
+                               uniform.type),
+                        uniform.offset);
+   } else {
+      reg = byte_offset(
+         retype(brw_vec1_grf(payload().num_regs + uniform.nr,
+                             uniform.subnr), uniform.type),
+         uniform.offset);
+   }
+
+   reg.abs = uniform.abs;
+   reg.negate = uniform.negate;
+
+   return reg;
+}
+
+void
+fs_visitor::dump_constant_ranges() const
+{
+   for (const auto &r : constant_ranges) {
+      fprintf(stderr, "block%04u range=[%03u, %03u] reg=%02u (%s)\n",
+              r.block, r.offset_B, r.length_B, r.reg_offset,
+              r.block == BRW_UBO_RANGE_PUSH_CONSTANT ? "push-constants" :
+              r.block == BRW_UBO_RANGE_DRIVER_INTERNAL ? "driver-constants" :
+              "ubo");
+   }
+}
+
 fs_visitor::fs_visitor(const struct brw_compiler *compiler,
                        const struct brw_compile_params *params,
                        const brw_base_prog_key *key,
@@ -1113,8 +1202,8 @@ fs_visitor::init()
    this->first_non_payload_grf = 0;
 
    this->uniforms = 0;
+   this->constants_assigned = false;
    this->last_scratch = 0;
-   this->push_constant_loc = NULL;
 
    memset(&this->shader_stats, 0, sizeof(this->shader_stats));
 

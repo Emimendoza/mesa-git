@@ -307,7 +307,7 @@ emit_indirect_generate_draw(struct iris_batch *batch,
       ps.BindingTableEntryCount = GFX_VER == 9 ? 1 : 0;
 #if GFX_VER < 20
       ps.PushConstantEnable     = shader->nr_params > 0 ||
-                                  shader->ubo_ranges[0].length;
+                                  shader->ubo_ranges[0].length_B;
 #endif
 
 #if GFX_VER >= 9

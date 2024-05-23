@@ -55,7 +55,7 @@ struct ubo_range_entry
 static int
 score(const struct ubo_range_entry *entry)
 {
-   return 2 * entry->benefit - entry->range.length;
+   return 2 * entry->benefit - entry->range.length_B;
 }
 
 /**
@@ -78,7 +78,7 @@ cmp_ubo_range_entry(const void *va, const void *vb)
 
    /* Finally use the start offset as a second tie-breaker, ascending order */
    if (delta == 0)
-      delta = a->range.start - b->range.start;
+      delta = a->range.start_B - b->range.start_B;
 
    return delta;
 }
@@ -184,10 +184,10 @@ print_ubo_entry(FILE *file,
    struct ubo_block_info *info = get_block_info(state, entry->range.block);
 
    fprintf(file,
-           "block %2d, start %2d, length %2d, bits = %"PRIx64", "
+           "block %2d, start %4d, length %4d, bits = %"PRIx64", "
            "benefit %2d, cost %2d, score = %2d\n",
-           entry->range.block, entry->range.start, entry->range.length,
-           info->offsets, entry->benefit, entry->range.length, score(entry));
+           entry->range.block, entry->range.start_B, entry->range.length_B,
+           info->offsets, entry->benefit, entry->range.length_B, score(entry));
 }
 
 void
@@ -222,6 +222,8 @@ brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
     */
    struct util_dynarray ranges;
    util_dynarray_init(&ranges, mem_ctx);
+
+   const unsigned sizeof_GRF = REG_SIZE * reg_unit(compiler->devinfo);
 
    hash_table_foreach(state.blocks, entry) {
       const int b = entry->hash - 1;
@@ -263,13 +265,13 @@ brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
             util_dynarray_grow(&ranges, struct ubo_range_entry, 1);
 
          entry->range.block = b;
-         entry->range.start = first_bit;
+         entry->range.start_B = first_bit * sizeof_GRF;
          /* first_hole is one beyond the end, so we don't need to add 1 */
-         entry->range.length = first_hole - first_bit;
+         entry->range.length_B = (first_hole - first_bit) * sizeof_GRF;
          entry->benefit = 0;
 
-         for (int i = 0; i < entry->range.length; i++)
-            entry->benefit += info->uses[first_bit + i];
+         for (int i = 0; i < DIV_ROUND_UP(entry->range.length_B, 32); i++)
+            entry->benefit += info->uses[first_bit + i] * sizeof_GRF;
       }
    }
 
@@ -310,21 +312,12 @@ brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
    const int max_ubos = 4 - state.uses_regular_uniforms;
    nr_entries = MIN2(nr_entries, max_ubos);
 
-   for (int i = 0; i < nr_entries; i++) {
+   for (int i = 0; i < nr_entries; i++)
       out_ranges[i] = entries[i].range;
-
-      /* To this point, various values have been tracked in terms of the real
-       * hardware register sizes.  However, the rest of the compiler expects
-       * values in terms of pre-Xe2 256-bit registers. Scale start and length
-       * to account for this.
-       */
-      out_ranges[i].start *= reg_unit(compiler->devinfo);
-      out_ranges[i].length *= reg_unit(compiler->devinfo);
-   }
    for (int i = nr_entries; i < 4; i++) {
       out_ranges[i].block = 0;
-      out_ranges[i].start = 0;
-      out_ranges[i].length = 0;
+      out_ranges[i].start_B = 0;
+      out_ranges[i].length_B = 0;
    }
 
    ralloc_free(ranges.mem_ctx);

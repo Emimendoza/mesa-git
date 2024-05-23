@@ -37,6 +37,10 @@ brw_fs_optimize(fs_visitor &s)
    })
 
    s.assign_constant_locations();
+
+   if (s.stage == MESA_SHADER_FRAGMENT)
+      OPT(brw_fs_lower_dynamic_msaa_flags);
+
    OPT(brw_fs_lower_constant_loads);
 
    if (s.compiler->lower_dpas)
@@ -511,4 +515,3 @@ brw_fs_opt_remove_extra_rounding_modes(fs_visitor &s)
 
    return progress;
 }
-

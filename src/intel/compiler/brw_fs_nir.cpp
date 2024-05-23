@@ -182,7 +182,7 @@ fs_nir_setup_uniforms(fs_visitor &s)
    const intel_device_info *devinfo = s.devinfo;
 
    /* Only the first compile gets to set up uniforms. */
-   if (s.push_constant_loc)
+   if (s.constants_assigned)
       return;
 
    s.uniforms = s.nir->num_uniforms / 4;
@@ -199,6 +199,8 @@ fs_nir_setup_uniforms(fs_visitor &s)
       *param = BRW_PARAM_BUILTIN_SUBGROUP_ID;
       s.uniforms++;
    }
+
+   s.assign_constant_locations();
 }
 
 static fs_reg
@@ -1973,15 +1975,17 @@ emit_pixel_interpolater_send(const fs_builder &bld,
                              const fs_reg &src,
                              const fs_reg &desc,
                              const fs_reg &flag_reg,
+                             const fs_reg &msaa_flags,
                              glsl_interp_mode interpolation)
 {
    struct brw_wm_prog_data *wm_prog_data =
       brw_wm_prog_data(bld.shader->prog_data);
 
    fs_reg srcs[INTERP_NUM_SRCS];
-   srcs[INTERP_SRC_OFFSET]       = src;
-   srcs[INTERP_SRC_MSG_DESC]     = desc;
-   srcs[INTERP_SRC_DYNAMIC_MODE] = flag_reg;
+   srcs[INTERP_SRC_OFFSET]             = src;
+   srcs[INTERP_SRC_MSG_DESC]           = desc;
+   srcs[INTERP_SRC_DYNAMIC_MODE]       = flag_reg;
+   srcs[INTERP_SRC_DYNAMIC_MSAA_FLAGS] = msaa_flags;
 
    fs_inst *inst = bld.emit(opcode, dst, srcs, INTERP_NUM_SRCS);
    /* 2 floats per slot returned */
@@ -3571,8 +3575,7 @@ emit_samplepos_setup(nir_to_brw_state &ntb)
    }
 
    if (wm_prog_data->persample_dispatch == BRW_SOMETIMES) {
-      check_dynamic_msaa_flag(abld, wm_prog_data,
-                              INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH);
+      check_dynamic_msaa_flag(abld, INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH);
       for (unsigned i = 0; i < 2; i++) {
          set_predicate(BRW_PREDICATE_NORMAL,
                        bld.SEL(offset(pos, abld, i), offset(pos, abld, i),
@@ -3592,7 +3595,6 @@ emit_sampleid_setup(nir_to_brw_state &ntb)
 
    assert(s.stage == MESA_SHADER_FRAGMENT);
    ASSERTED brw_wm_prog_key *key = (brw_wm_prog_key*) s.key;
-   struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(s.prog_data);
 
    const fs_builder abld = bld.annotate("compute sample id");
    fs_reg sample_id = abld.vgrf(BRW_TYPE_UD);
@@ -3645,8 +3647,7 @@ emit_sampleid_setup(nir_to_brw_state &ntb)
    abld.AND(sample_id, tmp, brw_imm_w(0xf));
 
    if (key->multisample_fbo == BRW_SOMETIMES) {
-      check_dynamic_msaa_flag(abld, wm_prog_data,
-                              INTEL_MSAA_FLAG_MULTISAMPLE_FBO);
+      check_dynamic_msaa_flag(abld, INTEL_MSAA_FLAG_MULTISAMPLE_FBO);
       set_predicate(BRW_PREDICATE_NORMAL,
                     abld.SEL(sample_id, sample_id, brw_imm_ud(0)));
    }
@@ -3694,8 +3695,7 @@ emit_samplemaskin_setup(nir_to_brw_state &ntb)
    if (wm_prog_data->persample_dispatch == BRW_ALWAYS)
       return mask;
 
-   check_dynamic_msaa_flag(abld, wm_prog_data,
-                           INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH);
+   check_dynamic_msaa_flag(abld, INTEL_MSAA_FLAG_PERSAMPLE_DISPATCH);
    set_predicate(BRW_PREDICATE_NORMAL, abld.SEL(mask, mask, coverage_mask));
 
    return mask;
@@ -3739,8 +3739,7 @@ emit_shading_rate_setup(nir_to_brw_state &ntb)
    if (wm_prog_data->coarse_pixel_dispatch == BRW_ALWAYS)
       return rate;
 
-   check_dynamic_msaa_flag(abld, wm_prog_data,
-                           INTEL_MSAA_FLAG_COARSE_RT_WRITES);
+   check_dynamic_msaa_flag(abld, INTEL_MSAA_FLAG_COARSE_RT_WRITES);
    set_predicate(BRW_PREDICATE_NORMAL, abld.SEL(rate, rate, brw_imm_ud(0)));
 
    return rate;
@@ -4040,12 +4039,11 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
       }
 
       fs_reg flag_reg;
+      fs_reg msaa_flags;
       struct brw_wm_prog_key *wm_prog_key = (struct brw_wm_prog_key *) s.key;
       if (wm_prog_key->multisample_fbo == BRW_SOMETIMES) {
-         struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(s.prog_data);
-
+         msaa_flags = dynamic_msaa_flags(bld);
          check_dynamic_msaa_flag(bld.exec_all().group(8, 0),
-                                 wm_prog_data,
                                  INTEL_MSAA_FLAG_MULTISAMPLE_FBO);
          flag_reg = brw_flag_reg(0, 0);
       }
@@ -4056,6 +4054,7 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
                                    fs_reg(), /* src */
                                    msg_data,
                                    flag_reg,
+                                   msaa_flags,
                                    interpolation);
       break;
    }
@@ -4065,6 +4064,11 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
          (enum glsl_interp_mode) nir_intrinsic_interp_mode(instr);
 
       nir_const_value *const_offset = nir_src_as_const_value(instr->src[0]);
+
+      struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(s.prog_data);
+      fs_reg msaa_flags;
+      if (wm_prog_data->coarse_pixel_dispatch == BRW_SOMETIMES)
+         msaa_flags = dynamic_msaa_flags(bld);
 
       if (const_offset) {
          assert(nir_src_bit_size(instr->src[0]) == 32);
@@ -4077,6 +4081,7 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
                                       fs_reg(), /* src */
                                       brw_imm_ud(off_x | (off_y << 4)),
                                       fs_reg(), /* flag_reg */
+                                      msaa_flags,
                                       interpolation);
       } else {
          fs_reg src = retype(get_nir_src(ntb, instr->src[0]), BRW_TYPE_D);
@@ -4087,6 +4092,7 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
                                       src,
                                       brw_imm_ud(0u),
                                       fs_reg(), /* flag_reg */
+                                      msaa_flags,
                                       interpolation);
       }
       break;
@@ -4128,6 +4134,10 @@ fs_nir_emit_fs_intrinsic(nir_to_brw_state &ntb,
       }
       break;
    }
+
+   case nir_intrinsic_load_fs_msaa_intel:
+      bld.MOV(retype(dest, BRW_TYPE_UD), dynamic_msaa_flags(bld));
+      break;
 
    default:
       fs_nir_emit_intrinsic(ntb, bld, instr);
@@ -4171,7 +4181,7 @@ fs_nir_emit_cs_intrinsic(nir_to_brw_state &ntb,
       break;
 
    case nir_intrinsic_load_subgroup_id:
-      s.cs_payload().load_subgroup_id(bld, dest);
+      s.cs_payload().load_subgroup_id(ntb.s, bld, dest);
       break;
 
    case nir_intrinsic_load_local_invocation_id:
@@ -4556,9 +4566,20 @@ try_rebuild_resource(nir_to_brw_state &ntb, const brw::fs_builder &bld, nir_def 
          case nir_intrinsic_load_uniform: {
             unsigned base_offset = nir_intrinsic_base(intrin);
             unsigned load_offset = nir_src_as_uint(intrin->src[0]);
-            fs_reg src(UNIFORM, base_offset / 4, BRW_TYPE_UD);
-            src.offset = load_offset + base_offset % 4;
+            fs_reg src = ntb.s.uniform_reg(BRW_UBO_RANGE_PUSH_CONSTANT,
+                                           load_offset + base_offset,
+                                           nir_intrinsic_range(intrin),
+                                           BRW_TYPE_UD);
             return src;
+         }
+
+         case nir_intrinsic_load_driver_uniform_intel: {
+            unsigned base_offset = nir_intrinsic_base(intrin);
+            unsigned load_offset = nir_src_as_uint(intrin->src[0]);
+            return ntb.s.uniform_reg(BRW_UBO_RANGE_DRIVER_INTERNAL,
+                                     base_offset + load_offset,
+                                     nir_intrinsic_range(intrin),
+                                     BRW_TYPE_UD);
          }
 
          default:
@@ -4667,8 +4688,22 @@ try_rebuild_resource(nir_to_brw_state &ntb, const brw::fs_builder &bld, nir_def 
 
             unsigned base_offset = nir_intrinsic_base(intrin);
             unsigned load_offset = nir_src_as_uint(intrin->src[0]);
-            fs_reg src(UNIFORM, base_offset / 4, BRW_TYPE_UD);
-            src.offset = load_offset + base_offset % 4;
+            fs_reg src = ntb.s.uniform_reg(BRW_UBO_RANGE_PUSH_CONSTANT,
+                                           load_offset + base_offset, 4,
+                                           BRW_TYPE_UD);
+            ubld8.MOV(src, &ntb.resource_insts[def->index]);
+            break;
+         }
+
+         case nir_intrinsic_load_driver_uniform_intel: {
+            if (!nir_src_is_const(intrin->src[0]))
+               break;
+
+            unsigned base_offset = nir_intrinsic_base(intrin);
+            unsigned load_offset = nir_src_as_uint(intrin->src[0]);
+            fs_reg src = ntb.s.uniform_reg(BRW_UBO_RANGE_DRIVER_INTERNAL,
+                                           base_offset + load_offset, 4,
+                                           BRW_TYPE_UD);
             ubld8.MOV(src, &ntb.resource_insts[def->index]);
             break;
          }
@@ -6054,14 +6089,22 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
       break;
    }
 
-   case nir_intrinsic_load_uniform: {
+   case nir_intrinsic_load_uniform:
+   case nir_intrinsic_load_driver_uniform_intel: {
       /* Offsets are in bytes but they should always aligned to
        * the type size
        */
       unsigned base_offset = nir_intrinsic_base(instr);
       assert(base_offset % 4 == 0 || base_offset % brw_type_size_bytes(dest.type) == 0);
 
-      fs_reg src(UNIFORM, base_offset / 4, dest.type);
+      fs_reg src = s.uniform_reg(
+         instr->intrinsic == nir_intrinsic_load_uniform ?
+         BRW_UBO_RANGE_PUSH_CONSTANT :
+         BRW_UBO_RANGE_DRIVER_INTERNAL,
+         base_offset,
+         nir_intrinsic_range(instr),
+         dest.type);
+      assert(src.file != BAD_FILE);
 
       if (nir_src_is_const(instr->src[0])) {
          unsigned load_offset = nir_src_as_uint(instr->src[0]);
@@ -6070,7 +6113,7 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
           * data take the modulo of the offset with 4 bytes and add it to
           * the offset to read from within the source register.
           */
-         src.offset = load_offset + base_offset % 4;
+         src = byte_offset(src, load_offset);
 
          for (unsigned j = 0; j < instr->num_components; j++) {
             bld.MOV(offset(dest, bld, j), offset(src, bld, j));
@@ -6215,24 +6258,12 @@ fs_nir_emit_intrinsic(nir_to_brw_state &ntb,
          const unsigned load_offset = nir_src_as_uint(instr->src[1]);
          const unsigned ubo_block =
             brw_nir_ubo_surface_index_get_push_block(instr->src[0]);
-         const unsigned offset_256b = load_offset / 32;
-         const unsigned end_256b =
-            DIV_ROUND_UP(load_offset + type_size * instr->num_components, 32);
 
          /* See if we've selected this as a push constant candidate */
-         fs_reg push_reg;
-         for (int i = 0; i < 4; i++) {
-            const struct brw_ubo_range *range = &s.prog_data->ubo_ranges[i];
-            if (range->block == ubo_block &&
-                offset_256b >= range->start &&
-                end_256b <= range->start + range->length) {
-
-               push_reg = fs_reg(UNIFORM, UBO_START + i, dest.type);
-               push_reg.offset = load_offset - 32 * range->start;
-               break;
-            }
-         }
-
+         fs_reg push_reg = s.uniform_reg(ubo_block,
+                                         load_offset,
+                                         type_size * instr->num_components,
+                                         dest.type);
          if (push_reg.file != BAD_FILE) {
             for (unsigned i = 0; i < instr->num_components; i++) {
                bld.MOV(offset(dest, bld, i),

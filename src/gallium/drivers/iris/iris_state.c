@@ -5186,7 +5186,7 @@ iris_store_fs_state(const struct intel_device_info *devinfo,
          devinfo->max_threads_per_psd - (GFX_VER == 8 ? 2 : 1);
 
 #if GFX_VER < 20
-      ps.PushConstantEnable = shader->ubo_ranges[0].length > 0;
+      ps.PushConstantEnable = shader->ubo_ranges[0].length_B > 0;
 #endif
 
       /* From the documentation for this packet:
@@ -5870,7 +5870,7 @@ iris_restore_render_saved_bos(struct iris_context *ice,
       for (int i = 0; i < 4; i++) {
          const struct iris_ubo_range *range = &shader->ubo_ranges[i];
 
-         if (range->length == 0)
+         if (range->length_B == 0)
             continue;
 
          /* Range block is a binding table index, map back to UBO index. */
@@ -6298,10 +6298,10 @@ init_aux_map_state(struct iris_batch *batch)
 struct push_bos {
    struct {
       struct iris_address addr;
-      uint32_t length;
+      uint32_t length_B;
    } buffers[4];
    int buffer_count;
-   uint32_t max_length;
+   uint32_t max_length_B;
 };
 
 static void
@@ -6313,19 +6313,19 @@ setup_constant_buffers(struct iris_context *ice,
    struct iris_shader_state *shs = &ice->state.shaders[stage];
    struct iris_compiled_shader *shader = ice->shaders.prog[stage];
 
-   uint32_t push_range_sum = 0;
+   uint32_t push_range_sum_B = 0;
 
    int n = 0;
    for (int i = 0; i < 4; i++) {
       const struct iris_ubo_range *range = &shader->ubo_ranges[i];
 
-      if (range->length == 0)
+      if (range->length_B == 0)
          continue;
 
-      push_range_sum += range->length;
+      push_range_sum_B += range->length_B;
 
-      if (range->length > push_bos->max_length)
-         push_bos->max_length = range->length;
+      if (range->length_B > push_bos->max_length_B)
+         push_bos->max_length_B = range->length_B;
 
       /* Range block is a binding table index, map back to UBO index. */
       unsigned block_index = iris_bti_to_group_index(
@@ -6340,9 +6340,9 @@ setup_constant_buffers(struct iris_context *ice,
       if (res)
          iris_emit_buffer_barrier_for(batch, res->bo, IRIS_DOMAIN_OTHER_READ);
 
-      push_bos->buffers[n].length = range->length;
+      push_bos->buffers[n].length_B = range->length_B;
       push_bos->buffers[n].addr =
-         res ? ro_bo(res->bo, range->start * 32 + cbuf->buffer_offset)
+         res ? ro_bo(res->bo, range->start_B + cbuf->buffer_offset)
          : batch->screen->workaround_address;
       n++;
    }
@@ -6352,7 +6352,7 @@ setup_constant_buffers(struct iris_context *ice,
     *    "The sum of all four read length fields must be less than or
     *    equal to the size of 64."
     */
-   assert(push_range_sum <= 64);
+   assert(push_range_sum_B <= 64 * 32);
 
    push_bos->buffer_count = n;
 }
@@ -6388,7 +6388,7 @@ emit_push_constant_packets(struct iris_context *ice,
       const unsigned shift = 4 - n;
       for (int i = 0; i < n; i++) {
          pkt.ConstantBody.ReadLength[i + shift] =
-            push_bos->buffers[i].length;
+            push_bos->buffers[i].length_B / 32;
          pkt.ConstantBody.Buffer[i + shift] = push_bos->buffers[i].addr;
       }
    }
@@ -6430,7 +6430,7 @@ emit_push_constant_packet_all(struct iris_context *ice,
       _iris_pack_state(batch, GENX(3DSTATE_CONSTANT_ALL_DATA),
                        dw + i * 2, data) {
          data.PointerToConstantBuffer = push_bos->buffers[i].addr;
-         data.ConstantBufferReadLength = push_bos->buffers[i].length;
+         data.ConstantBufferReadLength = push_bos->buffers[i].length_B / 32;
       }
    }
    iris_batch_emit(batch, const_all, sizeof(uint32_t) * num_dwords);
@@ -7045,7 +7045,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
 
       /* The Constant Buffer Read Length field from 3DSTATE_CONSTANT_ALL
        * contains only 5 bits, so we can only use it for buffers smaller than
-       * 32.
+       * 32 * 256bits.
        *
        * According to Wa_16011448509, Gfx12.0 misinterprets some address bits
        * in 3DSTATE_CONSTANT_ALL.  It should still be safe to use the command
@@ -7054,7 +7054,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
        * Just fall back to the individual 3DSTATE_CONSTANT_XS commands in that
        * case.
        */
-      if (push_bos.max_length < 32 && GFX_VERx10 > 120) {
+      if (push_bos.max_length_B < (32 * 32) && GFX_VERx10 > 120) {
          emit_push_constant_packet_all(ice, batch, 1 << stage, &push_bos);
          continue;
       }

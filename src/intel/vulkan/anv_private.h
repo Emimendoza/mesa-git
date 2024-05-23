@@ -140,6 +140,13 @@ struct intel_perf_query_result;
 #include "util/log.h"
 #include "wsi_common.h"
 
+#define ANV_RT_STAGE_BITS (VK_SHADER_STAGE_RAYGEN_BIT_KHR |             \
+                           VK_SHADER_STAGE_ANY_HIT_BIT_KHR |            \
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |        \
+                           VK_SHADER_STAGE_MISS_BIT_KHR |               \
+                           VK_SHADER_STAGE_INTERSECTION_BIT_KHR |       \
+                           VK_SHADER_STAGE_CALLABLE_BIT_KHR)
+
 #define NSEC_PER_SEC 1000000000ull
 
 #define BINDING_TABLE_POOL_BLOCK_SIZE (65536)
@@ -2957,6 +2964,7 @@ anv_descriptor_set_write_template(struct anv_device *device,
                                   const struct vk_descriptor_update_template *template,
                                   const void *data);
 
+#define ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS   (UINT8_MAX - 6)
 #define ANV_DESCRIPTOR_SET_DESCRIPTORS_BUFFER (UINT8_MAX - 5)
 #define ANV_DESCRIPTOR_SET_NULL               (UINT8_MAX - 4)
 #define ANV_DESCRIPTOR_SET_PUSH_CONSTANTS     (UINT8_MAX - 3)
@@ -3044,11 +3052,11 @@ struct anv_push_range {
    /** Dynamic offset index (for dynamic UBOs), relative to set. */
    uint8_t dynamic_offset_index;
 
-   /** Start offset in units of 32B */
-   uint8_t start;
+   /** Start offset in bytes */
+   uint16_t start_B;
 
-   /** Range in units of 32B */
-   uint8_t length;
+   /** Range in bytes */
+   uint16_t length_B;
 };
 
 struct anv_pipeline_sets_layout {
@@ -3403,10 +3411,7 @@ struct anv_xfb_binding {
    VkDeviceSize                                 size;
 };
 
-struct anv_push_constants {
-   /** Push constant data provided by the client through vkPushConstants */
-   uint8_t client_data[MAX_PUSH_CONSTANTS_SIZE];
-
+struct anv_driver_constants {
 #define ANV_DESCRIPTOR_SET_DYNAMIC_INDEX_MASK ((uint32_t)ANV_UBO_ALIGNMENT - 1)
 #define ANV_DESCRIPTOR_SET_OFFSET_MASK        (~(uint32_t)(ANV_UBO_ALIGNMENT - 1))
 
@@ -3471,7 +3476,7 @@ struct anv_push_constants {
           * This is never set by software but is implicitly filled out when
           * uploading the push constants for compute shaders.
           *
-          * This *MUST* be the last field of the anv_push_constants structure.
+          * This *MUST* be the last field of the anv_driver_constants structure.
           */
          uint32_t subgroup_id;
       } cs;
@@ -3640,13 +3645,25 @@ struct anv_cmd_pipeline_state {
    } descriptor_buffers[MAX_SETS];
    struct anv_push_descriptor_set push_descriptor;
 
-   struct anv_push_constants push_constants;
+   /** Push constants from the application */
+   uint8_t                                      push_constants[MAX_PUSH_CONSTANTS_SIZE];
+
+   uint16_t                                     push_constant_written_size;
+
+   /** Driver constants (loaded through push constants) */
+   struct anv_driver_constants                  driver_constants;
 
    /** Tracks whether the push constant data has changed and need to be reemitted */
    bool                                         push_constants_data_dirty;
 
-   /* Push constant state allocated when flushing push constants. */
-   struct anv_state          push_constants_state;
+   /** Tracks whether the driver constant data has changed and need to be reemitted */
+   bool                                         driver_constants_data_dirty;
+
+   /** Push constant state allocated when flushing push constants. */
+   struct anv_state                             push_constants_state;
+
+   /** Driver constant state allocated when flushing driver constants. */
+   struct anv_state                             driver_constants_state;
 
    /**
     * Dynamic buffer offsets.
@@ -3655,7 +3672,7 @@ struct anv_cmd_pipeline_state {
     * independent sets we cannot know which how much in total is going to be
     * used. As a result we need to store the maximum possible number per set.
     *
-    * Those values are written into anv_push_constants::dynamic_offsets at
+    * Those values are written into anv_driver_constants::dynamic_offsets at
     * flush time when have the pipeline with the final
     * anv_pipeline_sets_layout.
     */
@@ -3715,7 +3732,7 @@ struct anv_cmd_graphics_state {
    struct vk_sample_locations_state sample_locations;
 
    /* Dynamic msaa flags, this value can be different from
-    * anv_push_constants::gfx::fs_msaa_flags, as the push constant value only
+    * anv_driver_constants::gfx::fs_msaa_flags, as the push constant value only
     * needs to be updated for fragment shaders dynamically checking the value.
     */
    enum intel_msaa_flags fs_msaa_flags;
@@ -3761,8 +3778,6 @@ struct anv_cmd_compute_state {
    struct anv_cmd_pipeline_state base;
 
    bool pipeline_dirty;
-
-   struct anv_state push_data;
 
    struct anv_address num_workgroups;
 
@@ -4269,9 +4284,14 @@ anv_cmd_buffer_new_binding_table_block(struct anv_cmd_buffer *cmd_buffer);
 void anv_cmd_buffer_emit_bt_pool_base_address(struct anv_cmd_buffer *cmd_buffer);
 
 struct anv_state
-anv_cmd_buffer_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer);
+anv_cmd_buffer_push_constants(struct anv_cmd_buffer *cmd_buffer,
+                              struct anv_cmd_pipeline_state *pipe_state,
+                              uint32_t alignment);
 struct anv_state
-anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer);
+anv_cmd_buffer_combined_push_constants(struct anv_cmd_buffer *cmd_buffer);
+struct anv_state
+anv_cmd_buffer_driver_constants(struct anv_cmd_buffer *cmd_buffer,
+                                struct anv_cmd_pipeline_state *pipe_state);
 
 VkResult
 anv_cmd_buffer_alloc_blorp_binding_table(struct anv_cmd_buffer *cmd_buffer,
@@ -4374,6 +4394,22 @@ struct anv_pipeline_bind_map {
 
    struct anv_push_range                        push_ranges[4];
 };
+
+static inline const struct anv_push_range *
+anv_pipeline_bind_map_get_push_constant_range(const struct anv_pipeline_bind_map *bind_map)
+{
+   return bind_map->push_ranges[0].set == ANV_DESCRIPTOR_SET_PUSH_CONSTANTS ?
+          &bind_map->push_ranges[0] : NULL;
+}
+
+static inline const struct anv_push_range *
+anv_pipeline_bind_map_get_driver_constant_range(const struct anv_pipeline_bind_map *bind_map)
+{
+   return bind_map->push_ranges[0].set == ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS ?
+          &bind_map->push_ranges[0] :
+          bind_map->push_ranges[1].set == ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS ?
+          &bind_map->push_ranges[1] : NULL;
+}
 
 struct anv_push_descriptor_info {
    /* A bitfield of descriptors used. */
@@ -4604,7 +4640,7 @@ struct anv_graphics_pipeline {
    struct vk_dynamic_graphics_state             dynamic_state;
 
    /* If true, the patch control points are passed through push constants
-    * (anv_push_constants::gfx::tcs_input_vertices)
+    * (anv_driver_constants::gfx::tcs_input_vertices)
     */
    bool                                         dynamic_patch_control_points;
 

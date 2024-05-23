@@ -564,10 +564,10 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
 
             /* Check the last push constant value and update */
 
-            if (gfx->base.push_constants.gfx.fs_msaa_flags != fs_msaa_flags) {
-               gfx->base.push_constants.gfx.fs_msaa_flags = fs_msaa_flags;
+            if (gfx->base.driver_constants.gfx.fs_msaa_flags != fs_msaa_flags) {
+               gfx->base.driver_constants.gfx.fs_msaa_flags = fs_msaa_flags;
                cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
-               gfx->base.push_constants_data_dirty = true;
+               gfx->base.driver_constants_data_dirty = true;
             }
          }
       }
@@ -1489,7 +1489,8 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
    }
 #endif
 
-   struct anv_push_constants *push = &cmd_buffer->state.gfx.base.push_constants;
+   struct anv_driver_constants *drv_consts =
+      &cmd_buffer->state.gfx.base.driver_constants;
 
    /* If the pipeline uses a dynamic value of patch_control_points and either
     * the pipeline change or the dynamic value change, check the value and
@@ -1498,10 +1499,10 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
    if (pipeline->dynamic_patch_control_points &&
        ((gfx->dirty & ANV_CMD_DIRTY_PIPELINE) ||
         BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_TS_PATCH_CONTROL_POINTS)) &&
-       push->gfx.tcs_input_vertices != dyn->ts.patch_control_points) {
-      push->gfx.tcs_input_vertices = dyn->ts.patch_control_points;
+       drv_consts->gfx.tcs_input_vertices != dyn->ts.patch_control_points) {
+      drv_consts->gfx.tcs_input_vertices = dyn->ts.patch_control_points;
       cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-      gfx->base.push_constants_data_dirty = true;
+      gfx->base.driver_constants_data_dirty = true;
    }
 
 #undef GET

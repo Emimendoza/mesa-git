@@ -1602,7 +1602,7 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
       ps.BindingTableEntryCount     = fs_bin->bind_map.surface_count;
 #if GFX_VER < 20
       ps.PushConstantEnable         = wm_prog_data->base.nr_params > 0 ||
-                                      wm_prog_data->base.ubo_ranges[0].length;
+                                      wm_prog_data->base.ubo_ranges[0].length_B;
 #endif
 
       ps.MaximumNumberofThreadsPerPSD = devinfo->max_threads_per_psd - 1;
@@ -1796,12 +1796,8 @@ emit_task_state(struct anv_graphics_pipeline *pipeline)
       task.PreferredSLMAllocationSize        =
          preferred_slm_allocation_size(devinfo);
 
-      /*
-       * 3DSTATE_TASK_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      task.EmitInlineParameter = true;
+      task.EmitInlineParameter               =
+         task_prog_data->base.uses_inline_push_addr;
 
       task.XP0Required = task_prog_data->uses_drawid;
    }
@@ -1877,12 +1873,8 @@ emit_mesh_state(struct anv_graphics_pipeline *pipeline)
       mesh.PreferredSLMAllocationSize        =
          preferred_slm_allocation_size(devinfo);
 
-      /*
-       * 3DSTATE_MESH_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      mesh.EmitInlineParameter = true;
+      mesh.EmitInlineParameter               =
+         mesh_prog_data->base.uses_inline_push_addr;
 
       mesh.XP0Required = mesh_prog_data->uses_drawid;
    }

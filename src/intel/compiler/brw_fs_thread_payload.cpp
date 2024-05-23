@@ -379,13 +379,20 @@ cs_thread_payload::cs_thread_payload(const fs_visitor &v)
       /* TODO: Fill out uses_btd_stack_ids automatically */
       if (prog_data->uses_btd_stack_ids)
          r += reg_unit(v.devinfo);
+
+      if (v.key->uses_inline_push_addr) {
+         prog_data->uses_inline_push_addr = true;
+         inline_parameter = brw_ud1_grf(r, 0);
+         r += reg_unit(v.devinfo);
+      }
    }
 
    num_regs = r;
 }
 
 void
-cs_thread_payload::load_subgroup_id(const fs_builder &bld,
+cs_thread_payload::load_subgroup_id(const fs_visitor &v,
+                                    const fs_builder &bld,
                                     fs_reg &dest) const
 {
    auto devinfo = bld.shader->devinfo;
@@ -399,7 +406,8 @@ cs_thread_payload::load_subgroup_id(const fs_builder &bld,
       assert(gl_shader_stage_is_compute(bld.shader->stage));
       int index = brw_get_subgroup_id_param_index(devinfo,
                                                   bld.shader->prog_data);
-      bld.MOV(dest, fs_reg(UNIFORM, index, BRW_TYPE_UD));
+      bld.MOV(dest, v.uniform_reg(BRW_UBO_RANGE_PUSH_CONSTANT,
+                                  4 * index, 4, BRW_TYPE_UD));
    }
 }
 
@@ -466,6 +474,8 @@ task_mesh_thread_payload::task_mesh_thread_payload(fs_visitor &v)
 
 bs_thread_payload::bs_thread_payload(const fs_visitor &v)
 {
+   struct brw_bs_prog_data *prog_data = brw_bs_prog_data(v.prog_data);
+
    unsigned r = 0;
 
    /* R0: Thread header. */
@@ -475,6 +485,8 @@ bs_thread_payload::bs_thread_payload(const fs_visitor &v)
    r += reg_unit(v.devinfo);
 
    /* R2: Inline Parameter.  Used for argument addresses. */
+   prog_data->uses_inline_push_addr = v.key->uses_inline_push_addr;
+   inline_parameter = brw_ud1_grf(r, 0);
    global_arg_ptr = brw_ud1_grf(r, 0);
    local_arg_ptr = brw_ud1_grf(r, 2);
    r += reg_unit(v.devinfo);

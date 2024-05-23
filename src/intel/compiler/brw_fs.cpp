@@ -34,7 +34,9 @@
 #include "brw_fs_live_variables.h"
 #include "brw_nir.h"
 #include "brw_cfg.h"
+#include "brw_rt.h"
 #include "brw_private.h"
+#include "brw_rt.h"
 #include "intel_nir.h"
 #include "shader_enums.h"
 #include "dev/intel_debug.h"
@@ -44,6 +46,7 @@
 #include "util/u_math.h"
 
 #include <memory>
+#include <vector>
 
 using namespace brw;
 
@@ -1085,8 +1088,10 @@ fs_reg::fs_reg(enum brw_reg_file file, unsigned nr, enum brw_reg_type type)
 void
 fs_visitor::import_uniforms(fs_visitor *v)
 {
-   this->push_constant_loc = v->push_constant_loc;
    this->uniforms = v->uniforms;
+   this->constant_ranges = v->constant_ranges;
+   this->pull_constant_ranges = v->pull_constant_ranges;
+   this->constants_assigned = true;
 }
 
 enum brw_barycentric_mode
@@ -1212,26 +1217,30 @@ round_components_to_whole_registers(const intel_device_info *devinfo,
    return DIV_ROUND_UP(c, 8 * reg_unit(devinfo)) * reg_unit(devinfo);
 }
 
+static bool
+shader_stage_uses_a64_pull_constants(gl_shader_stage stage,
+                                     const brw_stage_prog_data *prog_data)
+{
+   if (gl_shader_stage_is_rt(stage))
+      return brw_bs_prog_data_const(prog_data)->uses_inline_push_addr;
+   if (gl_shader_stage_is_compute(stage) || gl_shader_stage_is_mesh(stage))
+      return brw_cs_prog_data_const(prog_data)->uses_inline_push_addr;
+   return false;
+}
+
 void
 fs_visitor::assign_curb_setup()
 {
-   unsigned uniform_push_length =
-      round_components_to_whole_registers(devinfo, prog_data->nr_params);
-
-   unsigned ubo_push_length = 0;
-   unsigned ubo_push_start[4];
-   for (int i = 0; i < 4; i++) {
-      ubo_push_start[i] = 8 * (ubo_push_length + uniform_push_length);
-      ubo_push_length += prog_data->ubo_ranges[i].length;
-
-      assert(ubo_push_start[i] % (8 * reg_unit(devinfo)) == 0);
-      assert(ubo_push_length % (1 * reg_unit(devinfo)) == 0);
-   }
-
-   prog_data->curb_read_length = uniform_push_length + ubo_push_length;
+   prog_data->curb_read_length = constant_ranges.empty() ? 0 :
+      (constant_ranges.back().reg_offset +
+       DIV_ROUND_UP(constant_ranges.back().length_B, REG_SIZE * reg_unit(devinfo)));
 
    uint64_t used = 0;
-   bool is_compute = gl_shader_stage_is_compute(stage);
+   const bool is_compute = gl_shader_stage_is_compute(stage);
+   const bool pull_constants =
+      devinfo->verx10 >= 125 &&
+      (is_compute ||
+       shader_stage_uses_a64_pull_constants(stage, prog_data));
 
    if (is_compute && brw_cs_prog_data(prog_data)->uses_inline_data) {
       /* With COMPUTE_WALKER, we can push up to one register worth of data via
@@ -1240,33 +1249,67 @@ fs_visitor::assign_curb_setup()
        * TODO: Support inline data and push at the same time.
        */
       assert(devinfo->verx10 >= 125);
-      assert(uniform_push_length <= reg_unit(devinfo));
-   } else if (is_compute && devinfo->verx10 >= 125) {
+      assert(!constant_ranges.empty());
+      assert(prog_data->curb_read_length <= reg_unit(devinfo));
+   } else if (pull_constants) {
       assert(devinfo->has_lsc);
+      assert(gl_shader_stage_is_compute(stage) ||
+             gl_shader_stage_is_mesh(stage) ||
+             gl_shader_stage_is_rt(stage));
       fs_builder ubld = fs_builder(this, 1).exec_all().at(
          cfg->first_block(), cfg->first_block()->start());
 
+      /* The address of the push constants is at offset 0 in the inline
+       * parameter.
+       */
+      fs_reg base_addr_a64 =
+         gl_shader_stage_is_rt(stage) ?
+         retype(bs_payload().inline_parameter, BRW_TYPE_UQ) :
+         retype(cs_payload().inline_parameter, BRW_TYPE_UQ);
       /* The base offset for our push data is passed in as R0.0[31:6]. We have
        * to mask off the bottom 6 bits.
        */
-      fs_reg base_addr =
-         ubld.AND(retype(brw_vec1_grf(0, 0), BRW_TYPE_UD),
-                  brw_imm_ud(INTEL_MASK(31, 6)));
+      fs_reg base_addr_a32 = ubld.AND(retype(brw_vec1_grf(0, 0), BRW_TYPE_UD),
+                                      brw_imm_ud(INTEL_MASK(31, 6)));
 
-      /* On Gfx12-HP we load constants at the start of the program using A32
-       * stateless messages.
+      /* For RT stages the address is a pointer to RT_DISPATCH_GLOBALS, the
+       * push constants are located behind that data so we have to apply to
+       * additional push_constants_offset. For all the other stages, the
+       * driver offsets the address/offset such that we can always loads from
+       * offset 0.
        */
-      for (unsigned i = 0; i < uniform_push_length;) {
-         /* Limit ourselves to LSC HW limit of 8 GRFs (256bytes D32V64). */
-         unsigned num_regs = MIN2(uniform_push_length - i, 8);
-         assert(num_regs > 0);
-         num_regs = 1 << util_logbase2(num_regs);
+      unsigned base_addr_a64_offset_B =
+         (gl_shader_stage_is_rt(stage) ? BRW_RT_PUSH_CONST_OFFSET : 0);
 
-         /* This pass occurs after all of the optimization passes, so don't
-          * emit an 'ADD addr, base_addr, 0' instruction.
-          */
-         fs_reg addr = i == 0 ? base_addr :
-            ubld.ADD(base_addr, brw_imm_ud(i * REG_SIZE));
+      /* Do the loading with either A32 or A64 LSC messages */
+      for (unsigned i = 0, r = 0; i < pull_constant_ranges.size(); i++) {
+         const struct pull_constant_range &range = pull_constant_ranges[i];
+         fs_reg addr;
+         if (range.offset_B != 0 ||
+             (range.type == PULL_CONSTANT_TYPE_A64 && base_addr_a64_offset_B != 0)) {
+            if (range.type == PULL_CONSTANT_TYPE_A64) {
+               /* We need to do the carry manually as when this pass is run,
+                * we're not expecting any 64bit ALUs.
+                */
+               addr = ubld.vgrf(BRW_TYPE_UQ);
+               fs_reg addr_ldw = subscript(addr, BRW_TYPE_UD, 0);
+               fs_reg addr_udw = subscript(addr, BRW_TYPE_UD, 1);
+               fs_reg base_addr_ldw = subscript(base_addr_a64, BRW_TYPE_UD, 0);
+               fs_reg base_addr_udw = subscript(base_addr_a64, BRW_TYPE_UD, 1);
+               ubld.ADD(addr_ldw, base_addr_ldw, brw_imm_ud(base_addr_a64_offset_B +
+                                                            range.offset_B));
+               ubld.CMP(ubld.null_reg_d(), addr_ldw, base_addr_ldw, BRW_CONDITIONAL_L);
+               set_predicate(BRW_PREDICATE_NORMAL,
+                             ubld.ADD(addr_udw, base_addr_udw, brw_imm_ud(1)));
+               set_predicate_inv(BRW_PREDICATE_NORMAL, true,
+                                 ubld.MOV(addr_udw, base_addr_udw));
+            } else {
+               addr = ubld.ADD(base_addr_a32, brw_imm_ud(range.offset_B));
+            }
+         } else {
+            addr = range.type == PULL_CONSTANT_TYPE_A64 ?
+                   base_addr_a64 : base_addr_a32;
+         }
 
          fs_reg srcs[4] = {
             brw_imm_ud(0), /* desc */
@@ -1275,25 +1318,27 @@ fs_visitor::assign_curb_setup()
             fs_reg(),      /* payload2 */
          };
 
-         fs_reg dest = retype(brw_vec8_grf(payload().num_regs + i, 0),
+         fs_reg dest = retype(brw_vec8_grf(payload().num_regs + r, 0),
                               BRW_TYPE_UD);
          fs_inst *send = ubld.emit(SHADER_OPCODE_SEND, dest, srcs, 4);
 
          send->sfid = GFX12_SFID_UGM;
          send->desc = lsc_msg_desc(devinfo, LSC_OP_LOAD,
                                    LSC_ADDR_SURFTYPE_FLAT,
-                                   LSC_ADDR_SIZE_A32,
+                                   range.type == PULL_CONSTANT_TYPE_A64 ?
+                                   LSC_ADDR_SIZE_A64 : LSC_ADDR_SIZE_A32,
                                    LSC_DATA_SIZE_D32,
-                                   num_regs * 8 /* num_channels */,
+                                   range.length_B / 4 /* num_channels */,
                                    true /* transpose */,
-                                   LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS));
+                                   LSC_CACHE(devinfo, LOAD, L1C_L3C));
          send->header_size = 0;
-         send->mlen = lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, 1);
-         send->size_written =
-            lsc_msg_dest_len(devinfo, LSC_DATA_SIZE_D32, num_regs * 8) * REG_SIZE;
+         send->mlen = lsc_msg_addr_len(
+            devinfo, range.type == PULL_CONSTANT_TYPE_A64 ?
+            LSC_ADDR_SIZE_A64 : LSC_ADDR_SIZE_A32, 1);
+         send->size_written = align(range.length_B, REG_SIZE);
          send->send_is_volatile = true;
 
-         i += num_regs;
+         r += DIV_ROUND_UP(range.length_B, REG_SIZE * reg_unit(devinfo));
       }
 
       invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
@@ -1303,37 +1348,12 @@ fs_visitor::assign_curb_setup()
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       for (unsigned int i = 0; i < inst->sources; i++) {
 	 if (inst->src[i].file == UNIFORM) {
-            int uniform_nr = inst->src[i].nr + inst->src[i].offset / 4;
-            int constant_nr;
-            if (inst->src[i].nr >= UBO_START) {
-               /* constant_nr is in 32-bit units, the rest are in bytes */
-               constant_nr = ubo_push_start[inst->src[i].nr - UBO_START] +
-                             inst->src[i].offset / 4;
-            } else if (uniform_nr >= 0 && uniform_nr < (int) uniforms) {
-               constant_nr = push_constant_loc[uniform_nr];
-            } else {
-               /* Section 5.11 of the OpenGL 4.1 spec says:
-                * "Out-of-bounds reads return undefined values, which include
-                *  values from other variables of the active program or zero."
-                * Just return the first push constant.
-                */
-               constant_nr = 0;
-            }
+            inst->src[i] = get_constant_payload_reg(inst->src[i]);
 
-            assert(constant_nr / 8 < 64);
-            used |= BITFIELD64_BIT(constant_nr / 8);
-
-	    struct brw_reg brw_reg = brw_vec1_grf(payload().num_regs +
-						  constant_nr / 8,
-						  constant_nr % 8);
-            brw_reg.abs = inst->src[i].abs;
-            brw_reg.negate = inst->src[i].negate;
-
-            assert(inst->src[i].stride == 0);
-            inst->src[i] = byte_offset(
-               retype(brw_reg, inst->src[i].type),
-               inst->src[i].offset % 4);
-	 }
+            unsigned reg_nr = inst->src[i].nr - payload().num_regs;
+            assert(reg_nr < 64);
+            used |= BITFIELD64_BIT(reg_nr);
+         }
       }
    }
 
@@ -1343,9 +1363,11 @@ fs_visitor::assign_curb_setup()
          cfg->first_block(), cfg->first_block()->start());
 
       /* push_reg_mask_param is in 32-bit units */
-      unsigned mask_param = prog_data->push_reg_mask_param;
-      struct brw_reg mask = brw_vec1_grf(payload().num_regs + mask_param / 8,
-                                                              mask_param % 8);
+      fs_reg mask = get_constant_payload_reg(
+         prog_data->push_reg_mask_param.block,
+         prog_data->push_reg_mask_param.offset_B,
+         BRW_TYPE_UD);
+      assert(mask.file != BAD_FILE);
 
       fs_reg b32;
       for (unsigned i = 0; i < 64; i++) {
@@ -1372,6 +1394,9 @@ fs_visitor::assign_curb_setup()
 
       invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
    }
+
+   if (prog_data->curb_read_length)
+      debug_optimizer(nir, "assign_curb_setup", 90, 90);
 
    /* This may be updated in assign_urb_setup or assign_vs_urb_setup. */
    this->first_non_payload_grf = payload().num_regs + prog_data->curb_read_length;
@@ -1948,6 +1973,93 @@ brw_get_subgroup_id_param_index(const intel_device_info *devinfo,
    return -1;
 }
 
+static std::vector<struct pull_constant_range>
+get_push_constant_access_ranges(const struct intel_device_info *devinfo,
+                                const nir_shader *nir,
+                                nir_intrinsic_op intrinsic,
+                                enum pull_constant_type pull_type)
+{
+   /* Build a bitfield of used uniforms so that we can pack the push constant
+    * loads.
+    */
+   BITSET_DECLARE(push_constant_dwords, XE2_MAX_GRF * 8);
+   BITSET_ZERO(push_constant_dwords);
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+            if (intrin->intrinsic != intrinsic)
+               continue;
+
+            uint32_t base, len;
+            base = nir_intrinsic_base(intrin);
+            len  = nir_intrinsic_range(intrin);
+
+            BITSET_SET_RANGE(push_constant_dwords,
+                             DIV_ROUND_UP(base, 4),
+                             DIV_ROUND_UP(base + len - 1, 4));
+         }
+      }
+   }
+
+   /* Limit ourselves to LSC HW limit of 256bytes D32V64. */
+   const uint32_t max_pull_load_B = 256;
+   /* The LSC is loading entire GRFs, if we have uniforms further apart than a
+    * GRF size we should split them in different ranges. This avoid register
+    * file fragmentation due to unused payloads.
+    */
+   const uint32_t grf_size = REG_SIZE * reg_unit(devinfo);
+
+   std::vector<struct pull_constant_range> ranges;
+   struct pull_constant_range current_range = {};
+   current_range.type = pull_type;
+   int dword;
+   BITSET_FOREACH_SET(dword, push_constant_dwords, XE2_MAX_GRF * 8) {
+      if (current_range.length_B == 0) {
+         current_range.offset_B = dword * 4;
+         current_range.length_B = 4;
+         continue;
+      }
+
+      if (dword * 4 - current_range.offset_B < max_pull_load_B &&
+          dword * 4 - (current_range.offset_B + current_range.length_B) < grf_size) {
+         current_range.length_B = dword * 4 - current_range.offset_B;
+         continue;
+      }
+
+      current_range.length_B = 1u << util_last_bit(current_range.length_B);
+      ranges.push_back(current_range);
+
+      current_range.offset_B = dword * 4;
+      current_range.length_B = 4;
+   }
+   if (current_range.length_B > 0) {
+      current_range.length_B = 1u << util_last_bit(current_range.length_B);
+      ranges.push_back(current_range);
+   }
+
+   return ranges;
+}
+
+void
+fs_visitor::append_constant_range(uint16_t block, uint32_t offset_B, uint32_t length_B)
+{
+   struct constant_range r;
+   r.block = block;
+   r.reg_offset = constant_ranges.empty() ? 0 :
+      constant_ranges.back().reg_offset +
+      DIV_ROUND_UP(constant_ranges.back().length_B,
+                   REG_SIZE * reg_unit(devinfo));
+   r.offset_B = offset_B;
+   r.length_B = length_B;
+
+   constant_ranges.push_back(r);
+}
+
 /**
  * Assign UNIFORM file registers to either push constants or pull constants.
  *
@@ -1961,34 +2073,92 @@ void
 fs_visitor::assign_constant_locations()
 {
    /* Only the first compile gets to decide on locations. */
-   if (push_constant_loc)
+   if (constants_assigned)
       return;
 
-   push_constant_loc = ralloc_array(mem_ctx, int, uniforms);
-   for (unsigned u = 0; u < uniforms; u++)
-      push_constant_loc[u] = u;
+   /* Compute the push constant locations.
+    *
+    * On Gfx12.5+, some stages can pick fewer/smaller chunks of data from the
+    * push constant range, based one what ranges are being used and pack the
+    * data into as few GRFs are as possible.
+    */
+   if (devinfo->verx10 >= 125 &&
+       (gl_shader_stage_is_compute(stage) ||
+        gl_shader_stage_is_mesh(stage) ||
+        gl_shader_stage_is_rt(stage))) {
+      enum pull_constant_type pull_type =
+         shader_stage_uses_a64_pull_constants(stage, prog_data) ?
+         PULL_CONSTANT_TYPE_A64 : PULL_CONSTANT_TYPE_A32;
+
+      /* Build a bitfield of used uniforms so that we can pack the push
+       * constant loads.
+       */
+      std::vector<struct pull_constant_range> ranges;
+      ranges = get_push_constant_access_ranges(devinfo, nir,
+                                               nir_intrinsic_load_uniform,
+                                               pull_type);
+      for (const auto &r : ranges)
+         append_constant_range(BRW_UBO_RANGE_PUSH_CONSTANT, r.offset_B, r.length_B);
+      pull_constant_ranges.insert(pull_constant_ranges.end(),
+                                  ranges.begin(), ranges.end());
+
+      struct brw_ubo_range *driver_range = NULL;
+      for (int i = 0; i < 4; i++) {
+         if (prog_data->ubo_ranges[i].block != BRW_UBO_RANGE_DRIVER_INTERNAL)
+            continue;
+         driver_range = &prog_data->ubo_ranges[i];
+         break;
+      }
+
+      ranges = get_push_constant_access_ranges(devinfo, nir,
+                                               nir_intrinsic_load_driver_uniform_intel,
+                                               PULL_CONSTANT_TYPE_A32);
+      if (!ranges.empty()) {
+         assert(driver_range != NULL);
+         for (const auto &r : ranges)
+            append_constant_range(BRW_UBO_RANGE_DRIVER_INTERNAL, r.offset_B, r.length_B);
+         for (const auto &r : ranges) {
+            struct pull_constant_range offseted_range = r;
+            assert(r.offset_B >= driver_range->start_B);
+            offseted_range.offset_B -= driver_range->start_B;
+            pull_constant_ranges.push_back(offseted_range);
+         }
+      }
+   } else {
+      if (uniforms)
+         append_constant_range(BRW_UBO_RANGE_PUSH_CONSTANT, 0, uniforms * 4);
+   }
 
    /* Now that we know how many regular uniforms we'll push, reduce the
     * UBO push ranges so we don't exceed the 3DSTATE_CONSTANT limits.
     *
     * If changing this value, note the limitation about total_regs in
     * brw_curbe.c/crocus_state.c
+    *
+    * This only applies to stages using 3DSTATE_CONSTANT instructions.
     */
-   const unsigned max_push_length = 64;
-   unsigned push_length =
-      round_components_to_whole_registers(devinfo, prog_data->nr_params);
-   for (int i = 0; i < 4; i++) {
-      struct brw_ubo_range *range = &prog_data->ubo_ranges[i];
+   if (brw_shader_stage_can_push_ubo(stage)) {
+      const unsigned max_push_length_B = 64 * REG_SIZE;
+      unsigned push_length_B =
+         REG_SIZE * reg_unit(devinfo) *
+         round_components_to_whole_registers(devinfo, prog_data->nr_params);
+      for (int i = 0; i < 4; i++) {
+         struct brw_ubo_range *range = &prog_data->ubo_ranges[i];
 
-      if (push_length + range->length > max_push_length)
-         range->length = max_push_length - push_length;
+         if (push_length_B + range->length_B > max_push_length_B)
+            range->length_B = max_push_length_B - push_length_B;
 
-      push_length += range->length;
+         push_length_B += range->length_B;
 
-      assert(push_length % (1 * reg_unit(devinfo)) == 0);
+         if (range->length_B > 0)
+            append_constant_range(range->block, range->start_B, range->length_B);
 
+         assert(push_length_B % (REG_SIZE * reg_unit(devinfo)) == 0);
+      }
+      assert(push_length_B <= max_push_length_B);
    }
-   assert(push_length <= max_push_length);
+
+   constants_assigned = true;
 }
 
 bool
@@ -2005,11 +2175,11 @@ fs_visitor::get_pull_locs(const fs_reg &src,
       &prog_data->ubo_ranges[src.nr - UBO_START];
 
    /* If this access is in our (reduced) range, use the push data. */
-   if (src.offset / 32 < range->length)
+   if (src.offset < range->length_B)
       return false;
 
    *out_surf_index = range->block;
-   *out_pull_index = (32 * range->start + src.offset) / 4;
+   *out_pull_index = (range->start_B + src.offset) / 4;
 
    prog_data->has_ubo_pull = true;
 
@@ -2466,6 +2636,9 @@ brw_instruction_name(const struct brw_isa_info *isa, enum opcode op)
       return "btd_retire_logical";
    case SHADER_OPCODE_READ_SR_REG:
       return "read_sr_reg";
+
+   case SHADER_OPCODE_DYNAMIC_MSAA_FLAGS:
+      return "dynamic_msaa_flags";
    }
 
    unreachable("not reached");
@@ -2843,7 +3016,7 @@ fs_visitor::allocate_registers(bool allow_spilling)
    if (needs_register_pressure)
       shader_stats.max_register_pressure = compute_max_register_pressure();
 
-   debug_optimizer(nir, "pre_register_allocate", 90, 90);
+   debug_optimizer(nir, "pre_register_allocate", 91, 90);
 
    bool spill_all = allow_spilling && INTEL_DEBUG(DEBUG_SPILL_FS);
 
@@ -2941,18 +3114,6 @@ fs_visitor::allocate_registers(bool allow_spilling)
    schedule_instructions_post_ra();
 
    debug_optimizer(nir, "post_ra_alloc_scheduling", 96, 2);
-
-   /* Lowering VGRF to FIXED_GRF is currently done as a separate pass instead
-    * of part of assign_regs since both bank conflicts optimization and post
-    * RA scheduling take advantage of distinguishing references to registers
-    * that were allocated from references that were already fixed.
-    *
-    * TODO: Change the passes above, then move this lowering to be part of
-    * assign_regs.
-    */
-   brw_fs_lower_vgrfs_to_fixed_grfs(*this);
-
-   debug_optimizer(nir, "lowered_vgrfs_to_fixed_grfs", 96, 3);
 
    if (last_scratch > 0) {
       ASSERTED unsigned max_scratch_size = 2 * 1024 * 1024;
@@ -3371,6 +3532,8 @@ fs_visitor::run_bs(bool allow_spilling)
    calculate_cfg();
 
    brw_fs_optimize(*this);
+
+   brw_bs_prog_data(prog_data)->base.nr_params = this->uniforms;
 
    assign_curb_setup();
 
@@ -3822,7 +3985,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
        * emit_alpha_to_coverage pass.
        */
       NIR_PASS(_, nir, nir_opt_constant_folding);
-      NIR_PASS(_, nir, brw_nir_lower_alpha_to_coverage, key, prog_data);
+      NIR_PASS(_, nir, brw_nir_lower_alpha_to_coverage, key);
    }
 
    NIR_PASS(_, nir, brw_nir_move_interpolation_to_top);
@@ -4599,13 +4762,20 @@ namespace brw {
       return tmp;
    }
 
+   fs_reg
+   dynamic_msaa_flags(const fs_builder &bld)
+   {
+      fs_reg msaa_flags = bld.vgrf(BRW_TYPE_UD);
+      bld.emit(SHADER_OPCODE_DYNAMIC_MSAA_FLAGS, msaa_flags);
+      return msaa_flags;
+   }
+
    void
    check_dynamic_msaa_flag(const fs_builder &bld,
-                           const struct brw_wm_prog_data *wm_prog_data,
                            enum intel_msaa_flags flag)
    {
       fs_inst *inst = bld.AND(bld.null_reg_ud(),
-                              dynamic_msaa_flags(wm_prog_data),
+                              dynamic_msaa_flags(bld),
                               brw_imm_ud(flag));
       inst->conditional_mod = BRW_CONDITIONAL_NZ;
    }

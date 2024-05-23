@@ -538,6 +538,8 @@ enum opcode {
 
    SHADER_OPCODE_READ_SR_REG,
 
+   SHADER_OPCODE_DYNAMIC_MSAA_FLAGS,
+
    RT_OPCODE_TRACE_RAY_LOGICAL,
 };
 
@@ -550,6 +552,7 @@ enum fb_write_logical_srcs {
    FB_WRITE_LOGICAL_SRC_SRC_STENCIL, /* gl_FragStencilRefARB */
    FB_WRITE_LOGICAL_SRC_OMASK,       /* Sample Mask (gl_SampleMask) */
    FB_WRITE_LOGICAL_SRC_COMPONENTS,  /* REQUIRED */
+   FB_WRITE_LOGICAL_MSAA_FLAGS,
    FB_WRITE_LOGICAL_NUM_SRCS
 };
 
@@ -693,6 +696,8 @@ enum interpolator_logical_srcs {
    INTERP_SRC_MSG_DESC,
    /** Flag register for dynamic mode */
    INTERP_SRC_DYNAMIC_MODE,
+   /** Dynamic MSAA flags value */
+   INTERP_SRC_DYNAMIC_MSAA_FLAGS,
 
    INTERP_NUM_SRCS
 };

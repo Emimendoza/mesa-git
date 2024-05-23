@@ -138,7 +138,7 @@ genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
        * so flag push constants as dirty if we change the pipeline.
        */
       cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_COMPUTE_BIT;
-      comp_state->base.push_constants_data_dirty = true;
+      comp_state->base.driver_constants_data_dirty = true;
    }
 
    cmd_buffer->state.descriptors_dirty |=
@@ -180,19 +180,35 @@ genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
    }
 
    if (cmd_buffer->state.push_constants_dirty & VK_SHADER_STAGE_COMPUTE_BIT) {
-
-      if (comp_state->push_data.alloc_size == 0 ||
+#if GFX_VERx10 >= 125
+      if (comp_state->base.push_constants_state.alloc_size == 0 ||
           comp_state->base.push_constants_data_dirty) {
-         comp_state->push_data =
-            anv_cmd_buffer_cs_push_constants(cmd_buffer);
+         comp_state->base.push_constants_state =
+            anv_cmd_buffer_push_constants(cmd_buffer, &comp_state->base, 64);
          comp_state->base.push_constants_data_dirty = false;
       }
+      if (comp_state->base.driver_constants_state.alloc_size == 0 ||
+          comp_state->base.driver_constants_data_dirty) {
+         comp_state->base.driver_constants_state =
+            anv_cmd_buffer_driver_constants(cmd_buffer, &comp_state->base);
+         comp_state->base.driver_constants_data_dirty = false;
+      }
+#else
+      if (comp_state->base.push_constants_state.alloc_size == 0 ||
+          comp_state->base.push_constants_data_dirty ||
+          comp_state->base.driver_constants_data_dirty) {
+         comp_state->base.push_constants_state =
+            anv_cmd_buffer_combined_push_constants(cmd_buffer);
+         comp_state->base.push_constants_data_dirty = false;
+         comp_state->base.driver_constants_data_dirty = false;
+      }
+#endif
 
 #if GFX_VERx10 < 125
-      if (comp_state->push_data.alloc_size) {
+      if (comp_state->base.push_constants_state.alloc_size) {
          anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_CURBE_LOAD), curbe) {
-            curbe.CURBETotalDataLength    = comp_state->push_data.alloc_size;
-            curbe.CURBEDataStartAddress   = comp_state->push_data.offset;
+            curbe.CURBETotalDataLength    = comp_state->base.push_constants_state.alloc_size;
+            curbe.CURBEDataStartAddress   = comp_state->base.push_constants_state.offset;
          }
       }
 #endif
@@ -214,17 +230,17 @@ anv_cmd_buffer_push_base_group_id(struct anv_cmd_buffer *cmd_buffer,
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
-   struct anv_push_constants *push =
-      &cmd_buffer->state.compute.base.push_constants;
-   if (push->cs.base_work_group_id[0] != baseGroupX ||
-       push->cs.base_work_group_id[1] != baseGroupY ||
-       push->cs.base_work_group_id[2] != baseGroupZ) {
-      push->cs.base_work_group_id[0] = baseGroupX;
-      push->cs.base_work_group_id[1] = baseGroupY;
-      push->cs.base_work_group_id[2] = baseGroupZ;
+   struct anv_driver_constants *drv_consts =
+      &cmd_buffer->state.compute.base.driver_constants;
+   if (drv_consts->cs.base_work_group_id[0] != baseGroupX ||
+       drv_consts->cs.base_work_group_id[1] != baseGroupY ||
+       drv_consts->cs.base_work_group_id[2] != baseGroupZ) {
+      drv_consts->cs.base_work_group_id[0] = baseGroupX;
+      drv_consts->cs.base_work_group_id[1] = baseGroupY;
+      drv_consts->cs.base_work_group_id[2] = baseGroupZ;
 
       cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_COMPUTE_BIT;
-      cmd_buffer->state.compute.base.push_constants_data_dirty = true;
+      cmd_buffer->state.compute.base.driver_constants_data_dirty = true;
    }
 }
 
@@ -289,6 +305,38 @@ get_interface_descriptor_data(struct anv_cmd_buffer *cmd_buffer,
    };
 }
 
+static inline struct anv_address
+get_push_constants_address(struct anv_cmd_buffer *cmd_buffer,
+                           const struct anv_shader_bin *shader)
+{
+   struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
+   const struct anv_push_range *range =
+      anv_pipeline_bind_map_get_push_constant_range(&shader->bind_map);
+   if (range == NULL)
+      return ANV_NULL_ADDRESS;
+   return anv_cmd_buffer_temporary_state_address(cmd_buffer,
+                                                 comp_state->base.push_constants_state);
+}
+
+static inline struct anv_state
+driver_constants_state(struct anv_cmd_buffer *cmd_buffer)
+{
+   struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
+   struct anv_compute_pipeline *pipeline =
+      anv_pipeline_to_compute(comp_state->base.pipeline);
+   const struct anv_push_range *range =
+      anv_pipeline_bind_map_get_driver_constant_range(&pipeline->cs->bind_map);
+   struct anv_state state = comp_state->base.driver_constants_state;
+
+   if (range) {
+      state.offset += range->start_B;
+      state.map += range->start_B;
+      state.alloc_size -= range->start_B;
+   }
+
+   return state;
+}
+
 static inline void
 emit_indirect_compute_walker(struct anv_cmd_buffer *cmd_buffer,
                              const struct anv_shader_bin *shader,
@@ -298,18 +346,18 @@ emit_indirect_compute_walker(struct anv_cmd_buffer *cmd_buffer,
    const struct intel_device_info *devinfo = cmd_buffer->device->info;
    assert(devinfo->has_indirect_unroll);
 
-   struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
    bool predicate = cmd_buffer->state.conditional_render_enabled;
 
    const struct intel_cs_dispatch_info dispatch =
       brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
    const int dispatch_size = dispatch.simd_size / 16;
 
+   struct anv_state driver_constants = driver_constants_state(cmd_buffer);
    struct GENX(COMPUTE_WALKER_BODY) body =  {
       .SIMDSize                 = dispatch_size,
       .MessageSIMD              = dispatch_size,
-      .IndirectDataStartAddress = comp_state->push_data.offset,
-      .IndirectDataLength       = comp_state->push_data.alloc_size,
+      .IndirectDataStartAddress = driver_constants.offset,
+      .IndirectDataLength       = driver_constants.alloc_size,
       .LocalXMaximum            = prog_data->local_size[0] - 1,
       .LocalYMaximum            = prog_data->local_size[1] - 1,
       .LocalZMaximum            = prog_data->local_size[2] - 1,
@@ -318,7 +366,12 @@ emit_indirect_compute_walker(struct anv_cmd_buffer *cmd_buffer,
       .InterfaceDescriptor =
          get_interface_descriptor_data(cmd_buffer, shader, prog_data,
                                        &dispatch),
+      .EmitInlineParameter      = prog_data->uses_inline_push_addr,
    };
+
+   uint64_t push_addr = anv_address_physical(
+      get_push_constants_address(cmd_buffer, shader));
+   memcpy(body.InlineData, &push_addr, sizeof(push_addr));
 
    cmd_buffer->last_indirect_dispatch =
       anv_batch_emitn(
@@ -341,46 +394,56 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
                     uint32_t groupCountX, uint32_t groupCountY,
                     uint32_t groupCountZ)
 {
-   const struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
    const bool predicate = cmd_buffer->state.conditional_render_enabled;
 
    const struct intel_device_info *devinfo = pipeline->base.device->info;
    const struct intel_cs_dispatch_info dispatch =
       brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
+   struct anv_state driver_constants = driver_constants_state(cmd_buffer);
 
    cmd_buffer->last_compute_walker =
-      anv_batch_emitn(
-         &cmd_buffer->batch,
-         GENX(COMPUTE_WALKER_length),
-         GENX(COMPUTE_WALKER),
-         .IndirectParameterEnable        = indirect,
-         .PredicateEnable                = predicate,
-         .SIMDSize                       = dispatch.simd_size / 16,
-         .MessageSIMD                    = dispatch.simd_size / 16,
-         .IndirectDataStartAddress       = comp_state->push_data.offset,
-         .IndirectDataLength             = comp_state->push_data.alloc_size,
+      anv_batch_emit_dwords(&cmd_buffer->batch,
+                            GENX(COMPUTE_WALKER_length));
+
+
+   struct GENX(COMPUTE_WALKER) walker =  {
+      GENX(COMPUTE_WALKER_header),
+      .IndirectParameterEnable        = indirect,
+      .PredicateEnable                = predicate,
+      .SIMDSize                       = dispatch.simd_size / 16,
+      .MessageSIMD                    = dispatch.simd_size / 16,
+      .IndirectDataStartAddress       = driver_constants.offset,
+      .IndirectDataLength             = driver_constants.alloc_size,
 #if GFX_VERx10 == 125
-         .SystolicModeEnable             = prog_data->uses_systolic,
+      .SystolicModeEnable             = prog_data->uses_systolic,
 #endif
-         .GenerateLocalID                = prog_data->generate_local_id != 0,
-         .EmitLocal                      = prog_data->generate_local_id,
-         .WalkOrder                      = prog_data->walk_order,
-         .TileLayout = prog_data->walk_order == INTEL_WALK_ORDER_YXZ ?
-                       TileY32bpe : Linear,
-         .LocalXMaximum                  = prog_data->local_size[0] - 1,
-         .LocalYMaximum                  = prog_data->local_size[1] - 1,
-         .LocalZMaximum                  = prog_data->local_size[2] - 1,
-         .ThreadGroupIDXDimension        = groupCountX,
-         .ThreadGroupIDYDimension        = groupCountY,
-         .ThreadGroupIDZDimension        = groupCountZ,
-         .ExecutionMask                  = dispatch.right_mask,
-         .PostSync                       = {
-            .MOCS                        = anv_mocs(pipeline->base.device, NULL, 0),
-         },
-         .InterfaceDescriptor =
-            get_interface_descriptor_data(cmd_buffer, pipeline->cs,
-                                          prog_data, &dispatch),
-      );
+      .GenerateLocalID                = prog_data->generate_local_id != 0,
+      .EmitLocal                      = prog_data->generate_local_id,
+      .WalkOrder                      = prog_data->walk_order,
+      .TileLayout = prog_data->walk_order == INTEL_WALK_ORDER_YXZ ?
+      TileY32bpe : Linear,
+      .LocalXMaximum                  = prog_data->local_size[0] - 1,
+      .LocalYMaximum                  = prog_data->local_size[1] - 1,
+      .LocalZMaximum                  = prog_data->local_size[2] - 1,
+      .ThreadGroupIDXDimension        = groupCountX,
+      .ThreadGroupIDYDimension        = groupCountY,
+      .ThreadGroupIDZDimension        = groupCountZ,
+      .ExecutionMask                  = dispatch.right_mask,
+      .PostSync                       = {
+         .MOCS                        = anv_mocs(pipeline->base.device, NULL, 0),
+      },
+      .InterfaceDescriptor =
+         get_interface_descriptor_data(cmd_buffer, pipeline->cs,
+                                       prog_data, &dispatch),
+      .EmitInlineParameter            = prog_data->uses_inline_push_addr,
+   };
+
+   uint64_t push_addr = anv_address_physical(
+      get_push_constants_address(cmd_buffer, pipeline->cs));
+   memcpy(walker.InlineData, &push_addr, sizeof(push_addr));
+
+   GENX(COMPUTE_WALKER_pack)(&cmd_buffer->batch,
+                             cmd_buffer->last_compute_walker, &walker);
 }
 
 #else /* #if GFX_VERx10 >= 125 */
@@ -742,7 +805,8 @@ cmd_buffer_emit_rt_dispatch_globals(struct anv_cmd_buffer *cmd_buffer,
    struct anv_state rtdg_state =
       anv_cmd_buffer_alloc_temporary_state(cmd_buffer,
                                            BRW_RT_PUSH_CONST_OFFSET +
-                                           sizeof(struct anv_push_constants),
+                                           sizeof(rt->base.push_constants) +
+                                           sizeof(rt->base.driver_constants),
                                            64);
 
    struct GENX(RT_DISPATCH_GLOBALS) rtdg = {
@@ -790,7 +854,8 @@ cmd_buffer_emit_rt_dispatch_globals_indirect(struct anv_cmd_buffer *cmd_buffer,
    struct anv_state rtdg_state =
       anv_cmd_buffer_alloc_temporary_state(cmd_buffer,
                                            BRW_RT_PUSH_CONST_OFFSET +
-                                           sizeof(struct anv_push_constants),
+                                           sizeof(rt->base.push_constants) +
+                                           sizeof(rt->base.driver_constants),
                                            64);
 
    struct GENX(RT_DISPATCH_GLOBALS) rtdg = {
@@ -911,12 +976,17 @@ cmd_buffer_trace_rays(struct anv_cmd_buffer *cmd_buffer,
       cmd_buffer_emit_rt_dispatch_globals(cmd_buffer, params);
 
    assert(rtdg_state.alloc_size >= (BRW_RT_PUSH_CONST_OFFSET +
-                                    sizeof(struct anv_push_constants)));
+                                    sizeof(rt->base.push_constants) +
+                                    sizeof(rt->base.driver_constants)));
    assert(GENX(RT_DISPATCH_GLOBALS_length) * 4 <= BRW_RT_PUSH_CONST_OFFSET);
    /* Push constants go after the RT_DISPATCH_GLOBALS */
    memcpy(rtdg_state.map + BRW_RT_PUSH_CONST_OFFSET,
-          &cmd_buffer->state.rt.base.push_constants,
-          sizeof(struct anv_push_constants));
+          cmd_buffer->state.rt.base.push_constants,
+          sizeof(cmd_buffer->state.rt.base.push_constants));
+   memcpy(rtdg_state.map + BRW_RT_PUSH_CONST_OFFSET +
+          sizeof(cmd_buffer->state.rt.base.push_constants),
+          &cmd_buffer->state.rt.base.driver_constants,
+          sizeof(cmd_buffer->state.rt.base.driver_constants));
 
    struct anv_address rtdg_addr =
       anv_cmd_buffer_temporary_state_address(cmd_buffer, rtdg_state);

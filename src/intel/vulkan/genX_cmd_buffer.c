@@ -395,6 +395,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
        */
       cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_COMPUTE_BIT;
       cmd_buffer->state.compute.base.push_constants_data_dirty = true;
+      cmd_buffer->state.compute.base.driver_constants_data_dirty = true;
 #endif
    }
 }
@@ -2745,20 +2746,20 @@ genX(flush_descriptor_buffers)(struct anv_cmd_buffer *cmd_buffer,
        (cmd_buffer->state.descriptor_buffers.dirty ||
         (pipe_state->pipeline->active_stages &
          cmd_buffer->state.descriptor_buffers.offsets_dirty) != 0)) {
-      struct anv_push_constants *push_constants =
-         &pipe_state->push_constants;
-      for (uint32_t i = 0; i < ARRAY_SIZE(push_constants->desc_surface_offsets); i++) {
+      struct anv_driver_constants *drv_consts =
+         &pipe_state->driver_constants;
+      for (uint32_t i = 0; i < ARRAY_SIZE(drv_consts->desc_surface_offsets); i++) {
          update_descriptor_set_surface_state(cmd_buffer, pipe_state, i);
 
-         push_constants->desc_surface_offsets[i] =
+         drv_consts->desc_surface_offsets[i] =
             compute_descriptor_set_surface_offset(cmd_buffer, pipe_state, i);
-         push_constants->desc_sampler_offsets[i] =
+         drv_consts->desc_sampler_offsets[i] =
             compute_descriptor_set_sampler_offset(cmd_buffer, pipe_state, i);
       }
 
 #if GFX_VERx10 < 125
       struct anv_device *device = cmd_buffer->device;
-      push_constants->surfaces_base_offset =
+      drv_consts->surfaces_base_offset =
          (cmd_buffer->state.descriptor_buffers.surfaces_address -
           device->physical->va.descriptor_buffer_pool.addr);
 #endif
@@ -2766,7 +2767,7 @@ genX(flush_descriptor_buffers)(struct anv_cmd_buffer *cmd_buffer,
       cmd_buffer->state.push_constants_dirty |=
          (cmd_buffer->state.descriptor_buffers.offsets_dirty &
           pipe_state->pipeline->active_stages);
-      pipe_state->push_constants_data_dirty = true;
+      pipe_state->driver_constants_data_dirty = true;
       cmd_buffer->state.descriptor_buffers.offsets_dirty &=
          ~pipe_state->pipeline->active_stages;
    }

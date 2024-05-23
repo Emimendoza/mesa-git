@@ -268,6 +268,8 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_optimization_barrier_sgpr_amd:
    case nir_intrinsic_load_printf_buffer_address:
    case nir_intrinsic_load_printf_base_identifier:
+   case nir_intrinsic_load_fs_msaa_intel:
+   case nir_intrinsic_load_driver_uniform_intel:
       is_divergent = false;
       break;
 
@@ -572,8 +574,6 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_image_load_raw_intel:
    case nir_intrinsic_get_ubo_size:
    case nir_intrinsic_load_ssbo_address:
-   case nir_intrinsic_load_desc_set_address_intel:
-   case nir_intrinsic_load_desc_set_dynamic_index_intel:
    case nir_intrinsic_load_global_constant_bounded:
    case nir_intrinsic_load_global_constant_offset:
    case nir_intrinsic_resource_intel:

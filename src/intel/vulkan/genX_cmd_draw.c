@@ -173,6 +173,26 @@ cmd_buffer_emit_descriptor_pointers(struct anv_cmd_buffer *cmd_buffer,
    }
 }
 
+static inline void
+cmd_buffer_ensure_push_constant_data(struct anv_cmd_buffer *cmd_buffer,
+                                     struct anv_cmd_graphics_state *gfx_state)
+{
+   if (gfx_state->base.push_constants_state.alloc_size == 0) {
+      gfx_state->base.push_constants_state =
+         anv_cmd_buffer_push_constants(cmd_buffer, &gfx_state->base, 32);
+   }
+}
+
+static inline void
+cmd_buffer_ensure_driver_constant_data(struct anv_cmd_buffer *cmd_buffer,
+                                       struct anv_cmd_graphics_state *gfx_state)
+{
+   if (gfx_state->base.driver_constants_state.alloc_size == 0) {
+      gfx_state->base.driver_constants_state =
+         anv_cmd_buffer_driver_constants(cmd_buffer, &gfx_state->base);
+   }
+}
+
 static struct anv_address
 get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
                        const struct anv_shader_bin *shader,
@@ -199,12 +219,16 @@ get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
    }
 
    case ANV_DESCRIPTOR_SET_PUSH_CONSTANTS: {
-      if (gfx_state->base.push_constants_state.alloc_size == 0) {
-         gfx_state->base.push_constants_state =
-            anv_cmd_buffer_gfx_push_constants(cmd_buffer);
-      }
+      cmd_buffer_ensure_push_constant_data(cmd_buffer, gfx_state);
       return anv_cmd_buffer_temporary_state_address(
          cmd_buffer, gfx_state->base.push_constants_state);
+   }
+
+   case ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS: {
+      cmd_buffer_ensure_driver_constant_data(cmd_buffer, gfx_state);
+      return anv_state_pool_state_address(
+         &cmd_buffer->device->general_state_pool,
+         gfx_state->base.driver_constants_state);
    }
 
    default: {
@@ -235,7 +259,7 @@ get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
        * writes to it for workarounds but always at the bottom.  The higher
        * bytes should be all zeros.
        */
-      assert(range->length * 32 <= 2048);
+      assert(range->length_B <= 2048);
       return (struct anv_address) {
          .bo = cmd_buffer->device->workaround_bo,
          .offset = 1024,
@@ -250,7 +274,7 @@ get_push_range_address(struct anv_cmd_buffer *cmd_buffer,
  * The range is relative to the start of the buffer, not the start of the
  * range.  The returned range may be smaller than
  *
- *    (range->start + range->length) * 32;
+ *    range->start_B + range->length_B;
  */
 static uint32_t
 get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
@@ -264,8 +288,8 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
       struct anv_descriptor_set *set =
          gfx_state->base.descriptors[range->index];
       struct anv_state state = set->desc_surface_mem;
-      assert(range->start * 32 < state.alloc_size);
-      assert((range->start + range->length) * 32 <= state.alloc_size);
+      assert(range->start_B < state.alloc_size);
+      assert((range->start_B + range->length_B) <= state.alloc_size);
       return state.alloc_size;
    }
 
@@ -274,7 +298,8 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
          range->index].layout->descriptor_buffer_surface_size;
 
    case ANV_DESCRIPTOR_SET_PUSH_CONSTANTS:
-      return (range->start + range->length) * 32;
+   case ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS:
+      return range->start_B + range->length_B;
 
    default: {
       assert(range->set < MAX_SETS);
@@ -290,7 +315,7 @@ get_push_range_bound_size(struct anv_cmd_buffer *cmd_buffer,
          if (!desc->buffer)
             return 0;
 
-         if (range->start * 32 > desc->bind_range)
+         if (range->start_B > desc->bind_range)
             return 0;
 
          return desc->bind_range;
@@ -377,11 +402,11 @@ cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
             const struct anv_push_range *range = &bind_map->push_ranges[i];
 
             /* At this point we only have non-empty ranges */
-            assert(range->length > 0);
+            assert(range->length_B > 0);
 
-            c.ConstantBody.ReadLength[i + shift] = range->length;
+            c.ConstantBody.ReadLength[i + shift] = range->length_B / 32;
             c.ConstantBody.Buffer[i + shift] =
-               anv_address_add(buffers[i], range->start * 32);
+               anv_address_add(buffers[i], range->start_B);
          }
       }
    }
@@ -427,8 +452,8 @@ cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
          &cmd_buffer->batch, dw + 2 + i * 2,
          &(struct GENX(3DSTATE_CONSTANT_ALL_DATA)) {
             .PointerToConstantBuffer =
-               anv_address_add(buffers[i], range->start * 32),
-            .ConstantBufferReadLength = range->length,
+               anv_address_add(buffers[i], range->start_B),
+            .ConstantBufferReadLength = range->length_B / 32,
          });
    }
 }
@@ -455,33 +480,42 @@ cmd_buffer_flush_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer,
       const struct anv_shader_bin *shader = pipeline->base.shaders[stage];
       if (shader->prog_data->zero_push_reg) {
          const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
-         struct anv_push_constants *push = &gfx_state->base.push_constants;
+         struct anv_driver_constants *drv_consts =
+            &gfx_state->base.driver_constants;
 
-         push->push_reg_mask[stage] = 0;
+         drv_consts->push_reg_mask[stage] = 0;
          /* Start of the current range in the shader, relative to the start of
           * push constants in the shader.
           */
          unsigned range_start_reg = 0;
          for (unsigned i = 0; i < 4; i++) {
             const struct anv_push_range *range = &bind_map->push_ranges[i];
-            if (range->length == 0)
+            if (range->length_B == 0)
                continue;
+
+            /* All the accesses of driver constants should always be properly
+             * bound, no need to zero anything.
+             */
+            if (range->set == ANV_DESCRIPTOR_SET_DRIVER_CONSTANTS) {
+               range_start_reg += range->length_B / 32;
+               continue;
+            }
 
             unsigned bound_size =
                get_push_range_bound_size(cmd_buffer, shader, range);
-            if (bound_size >= range->start * 32) {
+            if (bound_size >= range->start_B) {
                unsigned bound_regs =
-                  MIN2(DIV_ROUND_UP(bound_size, 32) - range->start,
-                       range->length);
+                  MIN2(bound_size - range->start_B, range->length_B) / 32;
                assert(range_start_reg + bound_regs <= 64);
-               push->push_reg_mask[stage] |= BITFIELD64_RANGE(range_start_reg,
-                                                              bound_regs);
+               drv_consts->push_reg_mask[stage] |= BITFIELD64_RANGE(range_start_reg,
+                                                                    bound_regs);
             }
 
             cmd_buffer->state.push_constants_dirty |=
                mesa_to_vk_shader_stage(stage);
+            gfx_state->base.driver_constants_data_dirty = true;
 
-            range_start_reg += range->length;
+            range_start_reg += range->length_B / 32;
          }
       }
    }
@@ -495,6 +529,9 @@ cmd_buffer_flush_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer,
     */
    if (gfx_state->base.push_constants_data_dirty || GFX_VER < 12)
       gfx_state->base.push_constants_state = ANV_STATE_NULL;
+
+   if (gfx_state->base.driver_constants_data_dirty || GFX_VER < 12)
+      gfx_state->base.driver_constants_state = ANV_STATE_NULL;
 
    anv_foreach_stage(stage, dirty_stages) {
       unsigned buffer_count = 0;
@@ -515,17 +552,17 @@ cmd_buffer_flush_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer,
           */
          for (unsigned i = 0; i < 4; i++) {
             const struct anv_push_range *range = &bind_map->push_ranges[i];
-            if (range->length == 0)
+            if (range->length_B == 0)
                break;
 
             buffers[i] = get_push_range_address(cmd_buffer, shader, range);
-            max_push_range = MAX2(max_push_range, range->length);
+            max_push_range = MAX2(max_push_range, range->length_B / 32);
             buffer_count++;
          }
 
          /* We have at most 4 buffers but they should be tightly packed */
          for (unsigned i = buffer_count; i < 4; i++)
-            assert(bind_map->push_ranges[i].length == 0);
+            assert(bind_map->push_ranges[i].length_B == 0);
       }
 
 #if GFX_VER >= 12
@@ -566,9 +603,25 @@ cmd_buffer_flush_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer,
 
    cmd_buffer->state.push_constants_dirty &= ~flushed;
    gfx_state->base.push_constants_data_dirty = false;
+   gfx_state->base.driver_constants_data_dirty = false;
 }
 
 #if GFX_VERx10 >= 125
+static inline struct anv_state
+driver_constants_state(struct anv_cmd_graphics_state *gfx_state,
+                       const struct anv_push_range *range)
+{
+   struct anv_state state = gfx_state->base.driver_constants_state;
+
+   if (range) {
+      state.offset += range->start_B;
+      state.map += range->start_B;
+      state.alloc_size -= range->start_B;
+   }
+
+   return state;
+}
+
 static void
 cmd_buffer_flush_mesh_inline_data(struct anv_cmd_buffer *cmd_buffer,
                                   VkShaderStageFlags dirty_stages)
@@ -579,23 +632,29 @@ cmd_buffer_flush_mesh_inline_data(struct anv_cmd_buffer *cmd_buffer,
 
    if (dirty_stages & VK_SHADER_STAGE_TASK_BIT_EXT &&
        anv_pipeline_has_stage(pipeline, MESA_SHADER_TASK)) {
-
       const struct anv_shader_bin *shader = pipeline->base.shaders[MESA_SHADER_TASK];
       const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
 
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_TASK_SHADER_DATA), data) {
-         const struct anv_push_range *range = &bind_map->push_ranges[0];
-         if (range->length > 0) {
-            struct anv_address buffer =
-               get_push_range_address(cmd_buffer, shader, range);
+         const struct anv_push_range *range;
+
+         range = anv_pipeline_bind_map_get_push_constant_range(bind_map);
+         if (range) {
+            cmd_buffer_ensure_push_constant_data(cmd_buffer, gfx_state);
+            struct anv_address buffer = anv_address_add(
+               get_push_range_address(cmd_buffer, shader, range),
+               range->start_B);
 
             uint64_t addr = anv_address_physical(buffer);
             data.InlineData[0] = addr & 0xffffffff;
             data.InlineData[1] = addr >> 32;
+         }
 
-            memcpy(&data.InlineData[BRW_TASK_MESH_PUSH_CONSTANTS_START_DW],
-                   cmd_buffer->state.gfx.base.push_constants.client_data,
-                   BRW_TASK_MESH_PUSH_CONSTANTS_SIZE_DW * 4);
+         range = anv_pipeline_bind_map_get_driver_constant_range(bind_map);
+         if (range) {
+            cmd_buffer_ensure_driver_constant_data(cmd_buffer, gfx_state);
+            data.IndirectDataStartAddress =
+               driver_constants_state(gfx_state, range).offset;
          }
       }
    }
@@ -607,18 +666,26 @@ cmd_buffer_flush_mesh_inline_data(struct anv_cmd_buffer *cmd_buffer,
       const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
 
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_MESH_SHADER_DATA), data) {
-         const struct anv_push_range *range = &bind_map->push_ranges[0];
-         if (range->length > 0) {
-            struct anv_address buffer =
-               get_push_range_address(cmd_buffer, shader, range);
+         const struct anv_push_range *range;
+
+
+         range = anv_pipeline_bind_map_get_push_constant_range(bind_map);
+         if (range) {
+            cmd_buffer_ensure_push_constant_data(cmd_buffer, gfx_state);
+            struct anv_address buffer = anv_address_add(
+               get_push_range_address(cmd_buffer, shader, range),
+               range->start_B);
 
             uint64_t addr = anv_address_physical(buffer);
             data.InlineData[0] = addr & 0xffffffff;
             data.InlineData[1] = addr >> 32;
+         }
 
-            memcpy(&data.InlineData[BRW_TASK_MESH_PUSH_CONSTANTS_START_DW],
-                   cmd_buffer->state.gfx.base.push_constants.client_data,
-                   BRW_TASK_MESH_PUSH_CONSTANTS_SIZE_DW * 4);
+         range = anv_pipeline_bind_map_get_driver_constant_range(bind_map);
+         if (range) {
+            cmd_buffer_ensure_driver_constant_data(cmd_buffer, gfx_state);
+            data.IndirectDataStartAddress =
+               driver_constants_state(gfx_state, range).offset;
          }
       }
    }

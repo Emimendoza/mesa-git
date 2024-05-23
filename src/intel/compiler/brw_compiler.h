@@ -160,6 +160,69 @@ brw_shader_stage_requires_bindless_resources(gl_shader_stage stage)
    return brw_shader_stage_is_bindless(stage) || gl_shader_stage_is_mesh(stage);
 }
 
+static inline bool
+brw_shader_stage_pulls_push_constants(const struct intel_device_info *devinfo,
+                                      gl_shader_stage stage)
+{
+   if (devinfo->verx10 < 125)
+      return false;
+
+   return gl_shader_stage_is_compute(stage) ||
+          gl_shader_stage_is_mesh(stage) ||
+          gl_shader_stage_is_rt(stage);
+}
+
+static inline bool
+brw_shader_stage_can_push_ubo(gl_shader_stage stage)
+{
+   return stage == MESA_SHADER_VERTEX ||
+          stage == MESA_SHADER_TESS_CTRL ||
+          stage == MESA_SHADER_TESS_EVAL ||
+          stage == MESA_SHADER_GEOMETRY ||
+          stage == MESA_SHADER_FRAGMENT;
+}
+
+static inline uint32_t
+brw_shader_stage_push_constant_alignment(const struct intel_device_info *devinfo,
+                                         gl_shader_stage stage)
+{
+   /* We're using A64 messages */
+   if (devinfo->verx10 >= 125) {
+      if (gl_shader_stage_is_compute(stage) ||
+          gl_shader_stage_is_mesh(stage) ||
+          gl_shader_stage_is_rt(stage))
+      return 4;
+   } else {
+      /* Requirement from MEDIA_CURBE_LOAD */
+      if (gl_shader_stage_is_compute(stage))
+         return 64;
+   }
+
+   /* Requirements from 3DSTATE_CONSTANT_* instructions */
+   return 32;
+}
+
+static inline uint32_t
+brw_shader_stage_driver_constant_alignment(const struct intel_device_info *devinfo,
+                                           gl_shader_stage stage)
+{
+   if (devinfo->verx10 >= 125) {
+      /* Requirement from COMPUTE_WALKER, 3DSTATE_MESH_SHADER_DATA &
+       * 3DSTATE_TASK_SHADER_DATA
+       */
+      if (gl_shader_stage_is_compute(stage) ||
+          gl_shader_stage_is_mesh(stage))
+         return 64;
+
+      /* We're using A64 message with an 128B offset from the base pointer. */
+      if (gl_shader_stage_is_rt(stage))
+         return 64;
+   }
+
+   /* Requirements from 3DSTATE_CONSTANT_* instructions */
+   return 32;
+}
+
 /**
  * Program key structures.
  *
@@ -199,7 +262,9 @@ struct brw_base_prog_key {
 
    enum brw_robustness_flags robust_flags:2;
 
-   unsigned padding:22;
+   bool uses_inline_push_addr:1;
+
+   unsigned padding:21;
 
    /**
     * Apply workarounds for SIN and COS input range problems.
@@ -368,13 +433,28 @@ PRAGMA_DIAGNOSTIC_POP
 /** Max number of render targets in a shader */
 #define BRW_MAX_DRAW_BUFFERS 8
 
+/** Indicates that the range is pointing at driver internal push constants. */
+#define BRW_UBO_RANGE_PUSH_CONSTANT   (UINT16_MAX - 0)
+#define BRW_UBO_RANGE_DRIVER_INTERNAL (UINT16_MAX - 1)
+
 struct brw_ubo_range
 {
    uint16_t block;
 
-   /* In units of 32-byte registers */
-   uint8_t start;
-   uint8_t length;
+   uint16_t start_B;
+   uint16_t length_B;
+};
+
+/* Pushed shader parameter */
+struct brw_push_param {
+   /* Block in which the parameter is located (matches one of
+    * brw_ubo_range::block), or BRW_UBO_RANGE_PUSH_CONSTANT if it is one of
+    * the uniform not accounted in any of brw_ubo_range.
+    */
+   uint16_t block;
+
+   /* Offset in bytes within the range */
+   uint16_t offset_B;
 };
 
 /* We reserve the first 2^16 values for builtins */
@@ -523,7 +603,7 @@ struct brw_stage_prog_data {
     * If this field is set, brw_compiler::compact_params must be false.
     */
    uint64_t zero_push_reg;
-   unsigned push_reg_mask_param;
+   struct brw_push_param push_reg_mask_param;
 
    unsigned curb_read_length;
    unsigned total_scratch;
@@ -693,7 +773,7 @@ struct brw_wm_prog_data {
     */
    enum brw_sometimes alpha_to_coverage;
 
-   unsigned msaa_flags_param;
+   struct brw_push_param msaa_flags_param;
 
    /**
     * Mask of which interpolation modes are required by the fragment shader.
@@ -1006,6 +1086,10 @@ struct brw_cs_prog_data {
    bool uses_barrier;
    bool uses_num_work_groups;
    bool uses_inline_data;
+   /** Whether inline push data is used to provide a 64bit pointer to push
+    * constants
+    */
+   bool uses_inline_push_addr;
    bool uses_btd_stack_ids;
    bool uses_systolic;
    uint8_t generate_local_id;
@@ -1015,14 +1099,6 @@ struct brw_cs_prog_data {
       struct brw_push_const_block cross_thread;
       struct brw_push_const_block per_thread;
    } push;
-
-   struct {
-      /** @{
-       * surface indices the CS-specific surfaces
-       */
-      uint32_t work_groups_start;
-      /** @} */
-   } binding_table;
 };
 
 static inline uint32_t
@@ -1040,8 +1116,16 @@ brw_cs_prog_data_prog_offset(const struct brw_cs_prog_data *prog_data,
 struct brw_bs_prog_data {
    struct brw_stage_prog_data base;
 
+   /** Whether inline push data is used to provide a 64bit pointer to push
+    * constants
+    */
+   bool uses_inline_push_addr;
+
    /** SIMD size of the root shader */
    uint8_t simd_size;
+
+   /** Offset of the push constant from the inline parameter pointer */
+   uint16_t push_constants_offset;
 
    /** Maximum stack size of all shaders */
    uint32_t max_stack_size;

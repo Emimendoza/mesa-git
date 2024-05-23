@@ -314,7 +314,8 @@ brw_compile_task(const struct brw_compiler *compiler,
       nir_shader *shader = nir_shader_clone(params->base.mem_ctx, nir);
       brw_nir_apply_key(shader, compiler, &key->base, dispatch_width);
 
-      NIR_PASS(_, shader, brw_nir_lower_load_uniforms);
+      if (!key->base.uses_inline_push_addr)
+         NIR_PASS(_, shader, brw_nir_lower_load_uniforms);
       NIR_PASS(_, shader, brw_nir_lower_simd, dispatch_width);
 
       brw_postprocess_nir(shader, compiler, debug_enabled,
@@ -1540,7 +1541,8 @@ brw_compile_mesh(const struct brw_compiler *compiler,
       NIR_PASS(_, shader, brw_nir_adjust_offset_for_arrayed_indices, &prog_data->map);
       /* Load uniforms can do a better job for constants, so fold before it. */
       NIR_PASS(_, shader, nir_opt_constant_folding);
-      NIR_PASS(_, shader, brw_nir_lower_load_uniforms);
+      if (!key->base.uses_inline_push_addr)
+         NIR_PASS(_, shader, brw_nir_lower_load_uniforms);
 
       NIR_PASS(_, shader, brw_nir_lower_simd, dispatch_width);
 

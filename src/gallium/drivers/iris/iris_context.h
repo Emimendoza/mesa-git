@@ -310,10 +310,8 @@ PRAGMA_DIAGNOSTIC_POP
 struct iris_ubo_range
 {
    uint16_t block;
-
-   /* In units of 32-byte registers */
-   uint8_t start;
-   uint8_t length;
+   uint16_t start_B;
+   uint16_t length_B;
 };
 
 struct iris_fs_data {
@@ -324,7 +322,6 @@ struct iris_fs_data {
    uint64_t inputs;
    unsigned num_varying_inputs;
 
-   unsigned msaa_flags_param;
    uint32_t flat_inputs;
 
    uint8_t computed_depth_mode;

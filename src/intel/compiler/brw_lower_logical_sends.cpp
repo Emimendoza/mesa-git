@@ -299,6 +299,7 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
    fs_reg sample_mask = inst->src[FB_WRITE_LOGICAL_SRC_OMASK];
    const unsigned components =
       inst->src[FB_WRITE_LOGICAL_SRC_COMPONENTS].ud;
+   const fs_reg &dynamic_msaa_flags = inst->src[FB_WRITE_LOGICAL_MSAA_FLAGS];
 
    assert(inst->target != 0 || src0_alpha.file == BAD_FILE);
 
@@ -472,10 +473,11 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
    if (prog_data->coarse_pixel_dispatch == BRW_ALWAYS) {
       inst->desc |= (1 << 18);
    } else if (prog_data->coarse_pixel_dispatch == BRW_SOMETIMES) {
+      assert(dynamic_msaa_flags.file != BAD_FILE);
       STATIC_ASSERT(INTEL_MSAA_FLAG_COARSE_RT_WRITES == (1 << 18));
       const fs_builder &ubld = bld.exec_all().group(8, 0);
       desc = ubld.vgrf(BRW_TYPE_UD);
-      ubld.AND(desc, dynamic_msaa_flags(prog_data),
+      ubld.AND(desc, dynamic_msaa_flags,
                brw_imm_ud(INTEL_MSAA_FLAG_COARSE_RT_WRITES));
       desc = component(desc, 0);
    }
@@ -2495,12 +2497,13 @@ lower_interpolator_logical_send(const fs_builder &bld, fs_inst *inst,
    if (wm_prog_data->coarse_pixel_dispatch == BRW_ALWAYS) {
       desc_imm |= (1 << 15);
    } else if (wm_prog_data->coarse_pixel_dispatch == BRW_SOMETIMES) {
+      assert(inst->src[INTERP_SRC_DYNAMIC_MSAA_FLAGS].file != BAD_FILE);
       STATIC_ASSERT(INTEL_MSAA_FLAG_COARSE_PI_MSG == (1 << 15));
       fs_reg orig_desc = desc;
       const fs_builder &ubld = bld.exec_all().group(8, 0);
       desc = ubld.vgrf(BRW_TYPE_UD);
-      ubld.AND(desc, dynamic_msaa_flags(wm_prog_data),
-               brw_imm_ud(INTEL_MSAA_FLAG_COARSE_PI_MSG));
+      ubld.AND(desc, inst->src[INTERP_SRC_DYNAMIC_MSAA_FLAGS],
+                     brw_imm_ud(INTEL_MSAA_FLAG_COARSE_PI_MSG));
 
       /* And, if it's AT_OFFSET, we might have a non-trivial descriptor */
       if (orig_desc.file == IMM) {

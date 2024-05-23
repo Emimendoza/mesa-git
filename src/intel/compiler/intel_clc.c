@@ -158,7 +158,6 @@ print_cs_prog_data_fields(FILE *fp, const char *prefix, const char *pad,
    assert(cs_prog_data->base.stage == MESA_SHADER_COMPUTE);
    fprintf(fp, "%s.base.stage = MESA_SHADER_COMPUTE,\n", pad);
    assert(cs_prog_data->base.zero_push_reg == 0);
-   assert(cs_prog_data->base.push_reg_mask_param == 0);
    PROG_DATA_FIELD("%u", base.curb_read_length);
    PROG_DATA_FIELD("%u", base.total_scratch);
    PROG_DATA_FIELD("%u", base.total_shared);
