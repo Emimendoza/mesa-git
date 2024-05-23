@@ -2724,6 +2724,13 @@ for op in ['flt', 'fge', 'feq']:
    optimizations += [
       (('iand', ('feq', a, a), (op, a, b)), ('!' + op, a, b)),
       (('iand', ('feq', a, a), (op, b, a)), ('!' + op, b, a)),
+      (('iand', ('fge', a, a), (op, a, b)), ('!' + op, a, b)),
+      (('iand', ('fge', a, a), (op, b, a)), ('!' + op, b, a)),
+
+      (('iand', ('feq', a, a), ('iand', (op, a, b), c)), ('iand', ('!' + op, a, b), c)),
+      (('iand', ('feq', a, a), ('iand', (op, b, a), c)), ('iand', ('!' + op, b, a), c)),
+      (('iand', ('fge', a, a), ('iand', (op, a, b), c)), ('iand', ('!' + op, a, b), c)),
+      (('iand', ('fge', a, a), ('iand', (op, b, a), c)), ('iand', ('!' + op, b, a), c)),
    ]
 
 # Add optimizations to handle the case where the result of a ternary is
@@ -3018,15 +3025,60 @@ late_optimizations = [
    (('feq',  ('fadd(is_used_once)', 'a(is_finite)', b), 0.0), ('feq',  a, ('fneg', b))),
    (('fneu', ('fadd(is_used_once)', 'a(is_finite)', b), 0.0), ('fneu', a, ('fneg', b))),
 
+   (('iand', ('feq',  'a@32', a), ('feq',  'b@32', b)),          ('!fge', ('fabs', a), ('fneg', ('fabs', b))) ),
+   (('ior',  ('fneu', 'a@32', a), ('fneu', 'b@32', b)), ('inot', ('!fge', ('fabs', a), ('fneg', ('fabs', b))))),
+
+   # These patterns try to catch the cases where a tree for
+   # all(!isnan(some_vec4)) is not well balanced.
+   (('iand', ('feq', 'a@32', a),
+             ('iand', ('feq', 'b@32', b), c)),
+    ('iand',         ('!fge', ('fabs', a), ('fneg', ('fabs', b))) , c)),
+
+   (('ior',  ('fneu', 'a@32', a),
+             ('ior', ('fneu', 'b@32', b), c)),
+    ('ior', ('inot', ('!fge', ('fabs', a), ('fneg', ('fabs', b)))), c)),
+
+   # These are open-coded versions of isfinite(x) and !isfinite(x). These are
+   # variations that have been "observed in the wild." Others are possible,
+   # and they may well exist.
+   (('iand', ('feq', a, a), ('ine', ('iand', 'a@32', 0x7f800000), 0x7f800000)),
+    ('fisfinite', a)),
+
+   (('ior', ('fneu', a, a), ('ieq', ('fabs', 'a@32'), 0x7f800000)),
+    ('inot', ('fisfinite', a))),
+
+   (('ior', ('fneu', a, a), ('ieq', ('iand', 'a@32', 0x7fffffff), 0x7f800000)),
+    ('inot', ('fisfinite', a))),
+
+   (('ior', ('fneu', a, a), ('ieq', 'a@32(is_not_negative)', 0x7f800000)),
+    ('inot', ('fisfinite', a))),
+
+   (('ior(many-comm-expr)',
+       ('ior', ('inot', ('!fge', ('fabs', a), ('fneg', ('fabs', b)))),
+               ('inot', ('!fge', ('fabs', c), ('fneg', ('fabs', d))))),
+       ('ior', ('ieq', ('fabs', a), 0x7f800000),
+               ('ior', ('ieq', ('fabs', b), 0x7f800000),
+                       ('ior', ('ieq', ('fabs', c), 0x7f800000),
+                               ('ieq', ('fabs', d), 0x7f800000))))
+    ),
+    ('inot', ('iand', ('iand', ('fisfinite', a), ('fisfinite', b)),
+                      ('iand', ('fisfinite', c), ('fisfinite', d)))
+    )
+   ),
+
    # This is how SpvOpFOrdNotEqual might be implemented.  Replace it with
    # SpvOpLessOrGreater.
-   (('iand', ('fneu', a, b),   ('iand', ('feq', a, a), ('feq', b, b))), ('ior', ('!flt', a, b), ('!flt', b, a))),
-   (('iand', ('fneu', a, 0.0),          ('feq', a, a)                ), ('!flt', 0.0, ('fabs', a))),
+   (('iand', ('fneu', a, b), ('!fge', ('fabs', a), ('fneg', ('fabs', b)))), ('ior', ('!flt', a, b), ('!flt', b, a))),
+   (('iand', ('fneu', a, 0.0), ('feq', a, a)), ('!flt', 0.0, ('fabs', a))),
+   (('iand', ('fneu', a, 'b(is_finite)'), ('feq', a, a)), ('!flt', 0.0, ('fabs', ('fadd', ('fneg', a), b)))),
+
+   (('iand', ('iand', ('fneu', a, 0.0), ('fneu', a, b)), ('feq', a, a)), ('iand', ('!flt', 0.0, ('fabs', a)), ('fneu', a, b))),
 
    # This is how SpvOpFUnordEqual might be implemented.  Replace it with
    # !SpvOpLessOrGreater.
-   (('ior', ('feq', a, b),   ('ior', ('fneu', a, a), ('fneu', b, b))), ('inot', ('ior', ('!flt', a, b), ('!flt', b, a)))),
-   (('ior', ('feq', a, 0.0),         ('fneu', a, a),                ), ('inot', ('!flt', 0.0, ('fabs', a)))),
+   (('ior', ('feq', a, b), ('inot', ('!fge', ('fabs', a), ('fneg', ('fabs', b))))), ('inot', ('ior', ('!flt', a, b), ('!flt', b, a)))),
+   (('ior', ('feq', a, 0.0), ('fneu', a, a)), ('inot', ('!flt', 0.0, ('fabs', a)))),
+   (('ior', ('feq', a, 'b(is_finite)'), ('fneu', a, a)), ('inot', ('!flt', 0.0, ('fabs', ('fadd', ('fneg', a), b))))),
 
    # nir_lower_to_source_mods will collapse this, but its existence during the
    # optimization loop can prevent other optimizations.
@@ -3373,6 +3425,11 @@ late_optimizations += [
   (('fcsel', ('slt', a, 0), b, c), ('fcsel_gt', ('fneg', a), b, c), "options->has_fused_comp_and_csel"),
   (('fcsel', ('sge', a, 0), b, c), ('fcsel_ge', a, b, c), "options->has_fused_comp_and_csel"),
   (('fcsel', ('sge', 0, a), b, c), ('fcsel_ge', ('fneg', a), b, c), "options->has_fused_comp_and_csel"),
+
+  # Several isnan related patterns in late_optimizations insert inot
+  # instructions. These case block generation of fcsel / icsel in addition to
+  # just being extra instructions for the backend to try to optimize.
+  (('bcsel', ('inot', a), b, c), ('bcsel', a, c, b)),
 
   (('bcsel', ('ilt', 0, 'a@32'), 'b@32', 'c@32'), ('i32csel_gt', a, b, c), "options->has_fused_comp_and_csel && !options->no_integers"),
   (('bcsel', ('ilt', 'a@32', 0), 'b@32', 'c@32'), ('i32csel_ge', a, c, b), "options->has_fused_comp_and_csel && !options->no_integers"),
