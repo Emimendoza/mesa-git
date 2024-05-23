@@ -516,12 +516,12 @@ emit_parallelcopies(cssa_ctx& ctx)
 void
 lower_to_cssa(Program* program, live& live_vars)
 {
-   reindex_ssa(program, live_vars.live_out);
+   reindex_ssa(program, live_vars);
    cssa_ctx ctx = {program, live_vars.live_out};
    collect_parallelcopies(ctx);
    emit_parallelcopies(ctx);
 
    /* update live variable information */
-   live_vars = live_var_analysis(program);
+   live_var_analysis(program, live_vars);
 }
 } // namespace aco

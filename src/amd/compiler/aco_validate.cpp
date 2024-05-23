@@ -1192,7 +1192,8 @@ validate_ra(Program* program)
       return false;
 
    bool err = false;
-   aco::live live_vars = aco::live_var_analysis(program);
+   aco::live live_vars;
+   aco::live_var_analysis(program, live_vars);
    std::vector<std::vector<Temp>> phi_sgpr_ops(program->blocks.size());
    uint16_t sgpr_limit = get_addr_sgpr_from_waves(program, program->num_waves);
 

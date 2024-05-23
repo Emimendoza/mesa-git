@@ -247,7 +247,8 @@ finish_ra_test(ra_test_policy policy)
    }
 
    program->workgroup_size = program->wave_size;
-   aco::live live_vars = aco::live_var_analysis(program.get());
+   aco::live live_vars;
+   aco::live_var_analysis(program.get(), live_vars);
    aco::register_allocation(program.get(), live_vars, policy);
 
    if (aco::validate_ra(program.get())) {
@@ -397,9 +398,10 @@ finish_isel_test(enum ac_hw_stage hw_stage, unsigned wave_size)
    }
 
    bool live_var_fail = false;
+   live live_vars;
    program->debug.func = &live_var_analysis_debug_func;
    program->debug.private_data = &live_var_fail;
-   aco::live_var_analysis(program.get());
+   aco::live_var_analysis(program.get(), live_vars);
    if (live_var_fail) {
       fail_test("Live var analysis failed");
       return;

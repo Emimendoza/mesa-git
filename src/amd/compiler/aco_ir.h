@@ -2026,6 +2026,14 @@ enum class CompilationProgress {
    after_ra,
 };
 
+struct live {
+   monotonic_buffer_resource memory;
+   /* live temps out per block */
+   std::vector<IDSet> live_out;
+   /* register demand (sgpr/vgpr) per instruction per block */
+   std::vector<std::vector<RegisterDemand>> register_demand;
+};
+
 class Program final {
 public:
    aco::monotonic_buffer_resource m{65536};
@@ -2099,7 +2107,7 @@ public:
    uint32_t peekAllocationId() { return allocationID; }
 
    friend void reindex_ssa(Program* program);
-   friend void reindex_ssa(Program* program, std::vector<IDSet>& live_out);
+   friend void reindex_ssa(Program* program, live& live_vars);
 
    Block* create_and_insert_block()
    {
@@ -2120,13 +2128,6 @@ public:
 
 private:
    uint32_t allocationID = 1;
-};
-
-struct live {
-   /* live temps out per block */
-   std::vector<IDSet> live_out;
-   /* register demand (sgpr/vgpr) per instruction per block */
-   std::vector<std::vector<RegisterDemand>> register_demand;
 };
 
 struct ra_test_policy {
@@ -2168,7 +2169,7 @@ void lower_phis(Program* program);
 void lower_subdword(Program* program);
 void calc_min_waves(Program* program);
 void update_vgpr_sgpr_demand(Program* program, const RegisterDemand new_demand);
-live live_var_analysis(Program* program);
+void live_var_analysis(Program* program, live& live);
 std::vector<uint16_t> dead_code_analysis(Program* program);
 void dominator_tree(Program* program);
 void insert_exec_mask(Program* program);

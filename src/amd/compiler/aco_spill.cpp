@@ -1739,7 +1739,7 @@ spill(Program* program, live& live_vars)
    assign_spill_slots(ctx, extra_vgprs);
 
    /* update live variable information */
-   live_vars = live_var_analysis(program);
+   live_var_analysis(program, live_vars);
 
    assert(program->num_waves > 0);
 }

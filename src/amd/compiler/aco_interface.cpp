@@ -124,7 +124,7 @@ aco_postprocess_shader(const struct aco_compiler_options* options,
       validate(program.get());
 
       /* spilling and scheduling */
-      live_vars = live_var_analysis(program.get());
+      live_var_analysis(program.get(), live_vars);
       if (program->collect_statistics)
          collect_presched_stats(program.get());
       spill(program.get(), live_vars);
