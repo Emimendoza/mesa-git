@@ -1289,13 +1289,21 @@ wsi_wl_surface_get_present_modes(VkIcdSurfaceBase *icd_surface,
                                  VkPresentModeKHR* pPresentModes)
 {
    VkIcdSurfaceWayland *surface = (VkIcdSurfaceWayland *)icd_surface;
+   struct wsi_wl_surface *wsi_wl_surface =
+      wl_container_of(surface, wsi_wl_surface, base);
    struct wsi_wayland *wsi =
       (struct wsi_wayland *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_WAYLAND];
 
-   struct wsi_wl_display display;
-   if (wsi_wl_display_init(wsi, &display, surface->display, true,
-                           wsi_device->sw))
-      return VK_ERROR_SURFACE_LOST_KHR;
+   /* Create temporary `wsi_wl_display` if `wsi_wl_display` is not initialized */
+   struct wsi_wl_display *display;
+   if (!wsi_wl_surface->display) {
+      display = malloc(sizeof(struct wsi_wl_display));
+      if (wsi_wl_display_init(wsi, display, surface->display, true,
+                              wsi_device->sw))
+         return VK_ERROR_SURFACE_LOST_KHR;
+   } else {
+      display = wsi_wl_surface->display;
+   }
 
    VkPresentModeKHR present_modes[3];
    uint32_t present_modes_count = 0;
@@ -1304,11 +1312,14 @@ wsi_wl_surface_get_present_modes(VkIcdSurfaceBase *icd_surface,
    present_modes[present_modes_count++] = VK_PRESENT_MODE_MAILBOX_KHR;
    present_modes[present_modes_count++] = VK_PRESENT_MODE_FIFO_KHR;
 
-   if (display.tearing_control_manager)
+   if (display->tearing_control_manager)
       present_modes[present_modes_count++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
 
    assert(present_modes_count <= ARRAY_SIZE(present_modes));
-   wsi_wl_display_finish(&display);
+   if (!wsi_wl_surface->display) {
+      wsi_wl_display_finish(display);
+      free(display);
+   }
 
    if (pPresentModes == NULL) {
       *pPresentModeCount = present_modes_count;
