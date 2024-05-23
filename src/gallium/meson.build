@@ -206,6 +206,7 @@ endif
 if with_dri
   subdir('frontends/dri')
   subdir('targets/dri')
+  subdir('targets/dril')
 endif
 if with_osmesa
   subdir('frontends/osmesa')
