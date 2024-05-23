@@ -3602,6 +3602,7 @@ typedef enum {
    nir_lower_find_lsb64 = (1 << 22),
    nir_lower_conv64 = (1 << 23),
    nir_lower_uadd_sat64 = (1 << 24),
+   nir_lower_iadd3_64 = (1 << 25),
 } nir_lower_int64_options;
 
 typedef enum {
@@ -6464,6 +6465,7 @@ typedef struct nir_opt_access_options {
 bool nir_opt_access(nir_shader *shader, const nir_opt_access_options *options);
 bool nir_opt_algebraic(nir_shader *shader);
 bool nir_opt_algebraic_before_ffma(nir_shader *shader);
+bool nir_opt_algebraic_before_lower_int64(nir_shader *shader);
 bool nir_opt_algebraic_late(nir_shader *shader);
 bool nir_opt_algebraic_distribute_src_mods(nir_shader *shader);
 bool nir_opt_constant_folding(nir_shader *shader);
