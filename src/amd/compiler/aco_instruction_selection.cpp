@@ -5171,8 +5171,8 @@ split_buffer_store(isel_context* ctx, nir_intrinsic_instr* instr, bool smem, Reg
          byte = 8;
 
       /* dword or larger stores have to be dword-aligned */
-      unsigned align_mul = instr ? nir_intrinsic_align_mul(instr) : 4;
-      unsigned align_offset = (instr ? nir_intrinsic_align_offset(instr) : 0) + offset;
+      unsigned align_mul = nir_intrinsic_align_mul(instr);
+      unsigned align_offset = nir_intrinsic_align_offset(instr) + offset;
       bool dword_aligned = align_offset % 4 == 0 && align_mul % 4 == 0;
       if (!dword_aligned)
          byte = MIN2(byte, (align_offset % 2 == 0 && align_mul % 2 == 0) ? 2 : 1);
@@ -5292,7 +5292,8 @@ emit_single_mubuf_store(isel_context* ctx, Temp descriptor, Temp voffset, Temp s
 void
 store_vmem_mubuf(isel_context* ctx, Temp src, Temp descriptor, Temp voffset, Temp soffset, Temp idx,
                  unsigned base_const_offset, unsigned elem_size_bytes, unsigned write_mask,
-                 bool swizzled, memory_sync_info sync, bool glc, bool slc)
+                 bool swizzled, memory_sync_info sync, bool glc, bool slc,
+                 nir_intrinsic_instr* intrin)
 {
    Builder bld(ctx->program, ctx->block);
    assert(elem_size_bytes == 1 || elem_size_bytes == 2 || elem_size_bytes == 4 ||
@@ -5303,7 +5304,7 @@ store_vmem_mubuf(isel_context* ctx, Temp src, Temp descriptor, Temp voffset, Tem
    unsigned write_count = 0;
    Temp write_datas[32];
    unsigned offsets[32];
-   split_buffer_store(ctx, NULL, false, RegType::vgpr, src, write_mask,
+   split_buffer_store(ctx, intrin, false, RegType::vgpr, src, write_mask,
                       swizzled && ctx->program->gfx_level <= GFX8 ? 4 : 16, &write_count,
                       write_datas, offsets);
 
@@ -7143,6 +7144,9 @@ visit_load_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
    nir_variable_mode mem_mode = nir_intrinsic_memory_modes(intrin);
    memory_sync_info sync(aco_storage_mode_from_nir_mem_mode(mem_mode));
 
+   const unsigned align_mul = nir_intrinsic_align_mul(intrin);
+   const unsigned align_offset = nir_intrinsic_align_offset(intrin);
+
    LoadEmitInfo info = {Operand(v_offset), dst, num_components, elem_size_bytes, descriptor};
    info.idx = idx;
    info.glc = glc;
@@ -7156,8 +7160,6 @@ visit_load_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
       const struct ac_vtx_format_info* vtx_info =
          ac_get_vtx_format_info(ctx->program->gfx_level, ctx->program->family, format);
       const struct util_format_description* f = util_format_description(format);
-      const unsigned align_mul = nir_intrinsic_align_mul(intrin);
-      const unsigned align_offset = nir_intrinsic_align_offset(intrin);
 
       /* Avoid splitting:
        * - non-array formats because that would result in incorrect code
@@ -7185,8 +7187,8 @@ visit_load_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
 
          info.component_stride = swizzle_element_size;
          info.swizzle_component_size = swizzle_element_size ? 4 : 0;
-         info.align_mul = MIN2(elem_size_bytes, 4);
-         info.align_offset = 0;
+         info.align_mul = align_mul;
+         info.align_offset = align_offset;
 
          emit_load(ctx, bld, info, mubuf_load_params);
       }
@@ -7228,7 +7230,7 @@ visit_store_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
                          written_once ? semantic_can_reorder : semantic_none);
 
    store_vmem_mubuf(ctx, store_src, descriptor, v_offset, s_offset, idx, const_offset,
-                    elem_size_bytes, write_mask, swizzled, sync, glc, slc);
+                    elem_size_bytes, write_mask, swizzled, sync, glc, slc, intrin);
 }
 
 void

@@ -1226,8 +1226,8 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
    };
 }
 
-static size_t
-radv_max_descriptor_set_size()
+size_t
+radv_max_descriptor_set_size(void)
 {
    /* make sure that the entire descriptor set is addressable with a signed
     * 32-bit int. So the sum of all limits scaled by descriptor size has to

@@ -12,6 +12,7 @@
 #include "nir/nir.h"
 #include "nir/nir_builder.h"
 #include "nir/nir_serialize.h"
+#include "nir/nir_xfb_info.h"
 #include "nir/radv_nir.h"
 #include "spirv/nir_spirv.h"
 #include "util/disk_cache.h"
@@ -22,6 +23,7 @@
 #include "radv_debug.h"
 #include "radv_entrypoints.h"
 #include "radv_formats.h"
+#include "radv_physical_device.h"
 #include "radv_pipeline_cache.h"
 #include "radv_rmv.h"
 #include "radv_shader.h"
@@ -1263,23 +1265,6 @@ radv_link_shaders(const struct radv_device *device, struct radv_shader_stage *pr
 
    progress = nir_remove_unused_varyings(producer, consumer);
 
-   nir_compact_varyings(producer, consumer, true);
-
-   /* nir_compact_varyings changes deleted varyings into shader_temp.
-    * We need to remove these otherwise we risk them being lowered to scratch.
-    * This can especially happen to arrayed outputs.
-    */
-   NIR_PASS(_, producer, nir_remove_dead_variables, nir_var_shader_temp, NULL);
-   NIR_PASS(_, consumer, nir_remove_dead_variables, nir_var_shader_temp, NULL);
-
-   nir_validate_shader(producer, "after nir_compact_varyings");
-   nir_validate_shader(consumer, "after nir_compact_varyings");
-
-   if (producer->info.stage == MESA_SHADER_MESH) {
-      /* nir_compact_varyings can change the location of per-vertex and per-primitive outputs */
-      nir_shader_gather_info(producer, nir_shader_get_entrypoint(producer));
-   }
-
    const bool has_geom_or_tess =
       consumer->info.stage == MESA_SHADER_GEOMETRY || consumer->info.stage == MESA_SHADER_TESS_CTRL;
    const bool merged_gs = consumer->info.stage == MESA_SHADER_GEOMETRY && gfx_level >= GFX9;
@@ -1343,24 +1328,6 @@ radv_link_vs(const struct radv_device *device, struct radv_shader_stage *vs_stag
 
       radv_link_shaders(device, vs_stage, next_stage, gfx_state);
    }
-
-   if (next_stage && next_stage->nir->info.stage == MESA_SHADER_TESS_CTRL) {
-      nir_linked_io_var_info vs2tcs = nir_assign_linked_io_var_locations(vs_stage->nir, next_stage->nir);
-
-      vs_stage->info.vs.num_linked_outputs = vs2tcs.num_linked_io_vars;
-      vs_stage->info.outputs_linked = true;
-
-      next_stage->info.tcs.num_linked_inputs = vs2tcs.num_linked_io_vars;
-      next_stage->info.inputs_linked = true;
-   } else if (next_stage && next_stage->nir->info.stage == MESA_SHADER_GEOMETRY) {
-      nir_linked_io_var_info vs2gs = nir_assign_linked_io_var_locations(vs_stage->nir, next_stage->nir);
-
-      vs_stage->info.vs.num_linked_outputs = vs2gs.num_linked_io_vars;
-      vs_stage->info.outputs_linked = true;
-
-      next_stage->info.gs.num_linked_inputs = vs2gs.num_linked_io_vars;
-      next_stage->info.inputs_linked = true;
-   }
 }
 
 static void
@@ -1377,28 +1344,6 @@ radv_link_tcs(const struct radv_device *device, struct radv_shader_stage *tcs_st
 
    /* Copy TCS info into the TES info */
    merge_tess_info(&tes_stage->nir->info, &tcs_stage->nir->info);
-
-   /* Count the number of per-vertex output slots we need to reserve for the TCS and TES. */
-   const uint64_t nir_mask = tcs_stage->nir->info.outputs_written & tes_stage->nir->info.inputs_read &
-                             ~(VARYING_BIT_TESS_LEVEL_OUTER | VARYING_BIT_TESS_LEVEL_INNER);
-   const uint64_t io_mask = radv_gather_unlinked_io_mask(nir_mask);
-   const unsigned num_reserved_outputs = util_last_bit64(io_mask);
-
-   /* Count the number of per-patch output slots we need to reserve for the TCS and TES.
-    * This is necessary because we need it to determine the patch size in VRAM.
-    */
-   const uint64_t patch_io_mask = radv_gather_unlinked_patch_io_mask(
-      tcs_stage->nir->info.outputs_written & tes_stage->nir->info.inputs_read,
-      tcs_stage->nir->info.patch_outputs_written & tes_stage->nir->info.patch_inputs_read);
-   const unsigned num_reserved_patch_outputs = util_last_bit64(patch_io_mask);
-
-   tcs_stage->info.tcs.num_linked_outputs = num_reserved_outputs;
-   tcs_stage->info.tcs.num_linked_patch_outputs = num_reserved_patch_outputs;
-   tcs_stage->info.outputs_linked = true;
-
-   tes_stage->info.tes.num_linked_inputs = num_reserved_outputs;
-   tes_stage->info.tes.num_linked_patch_inputs = num_reserved_patch_outputs;
-   tes_stage->info.inputs_linked = true;
 }
 
 static void
@@ -1416,16 +1361,6 @@ radv_link_tes(const struct radv_device *device, struct radv_shader_stage *tes_st
              next_stage->nir->info.stage == MESA_SHADER_FRAGMENT);
 
       radv_link_shaders(device, tes_stage, next_stage, gfx_state);
-   }
-
-   if (next_stage && next_stage->nir->info.stage == MESA_SHADER_GEOMETRY) {
-      nir_linked_io_var_info tes2gs = nir_assign_linked_io_var_locations(tes_stage->nir, next_stage->nir);
-
-      tes_stage->info.tes.num_linked_outputs = tes2gs.num_linked_io_vars;
-      tes_stage->info.outputs_linked = true;
-
-      next_stage->info.gs.num_linked_inputs = tes2gs.num_linked_io_vars;
-      next_stage->info.inputs_linked = true;
    }
 }
 
@@ -1577,6 +1512,139 @@ radv_graphics_shaders_link(const struct radv_device *device, const struct radv_g
       }
 
       next_stage = &stages[s];
+   }
+}
+
+static void
+radv_graphics_shaders_link_varyings(const struct radv_device *device,
+                                    struct radv_shader_stage *stages)
+{
+   const enum amd_gfx_level gfx_level = radv_device_physical(device)->info.gfx_level;
+   const unsigned max_ubos = radv_max_descriptor_set_size();
+   const unsigned max_ubo_comps = max_ubos * 4;
+
+   /* Optimize varyings from first to last stage. */
+   gl_shader_stage prev = MESA_SHADER_NONE;
+   for (int i = 0; i < ARRAY_SIZE(graphics_shader_order); ++i) {
+      gl_shader_stage s = graphics_shader_order[i];
+      if (!stages[s].nir)
+         continue;
+
+      if (prev != MESA_SHADER_NONE && !stages[prev].key.optimisations_disabled && !stages[s].key.optimisations_disabled) {
+         nir_shader *producer = stages[prev].nir;
+         nir_shader *consumer = stages[s].nir;
+
+         /* It is expected that no undefined stores are present in the shader. */
+         NIR_PASS(_, producer, nir_opt_undef);
+
+         /* Update load/store alignments because inter-stage code motion may move instructions used to deduce this info. */
+         NIR_PASS(_, consumer, nir_opt_load_store_update_alignments);
+
+         NIR_PASS(_, producer, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
+         NIR_PASS(_, consumer, nir_lower_io_to_scalar, nir_var_shader_in, NULL, NULL);
+
+         /* Eliminate useless vec->mov copies resulting from scalarization. */
+         NIR_PASS(_, producer, nir_copy_prop);
+
+         const nir_opt_varyings_progress p = nir_opt_varyings(producer, consumer, true, max_ubo_comps, max_ubos);
+         if (p & nir_progress_producer)
+            radv_optimize_nir_algebraic(producer, false, false);
+         if (p & nir_progress_consumer)
+            radv_optimize_nir_algebraic(consumer, false, false);
+      }
+
+      prev = s;
+   }
+
+   /* Optimize varyings from last to first stage. */
+   gl_shader_stage next = MESA_SHADER_NONE;
+   for (int i = ARRAY_SIZE(graphics_shader_order) - 1; i >= 0; --i) {
+      gl_shader_stage s = graphics_shader_order[i];
+      if (!stages[s].nir)
+         continue;
+
+      if (next != MESA_SHADER_NONE && !stages[s].key.optimisations_disabled && !stages[next].key.optimisations_disabled) {
+         struct radv_shader_stage *producer_stage = &stages[s];
+         struct radv_shader_stage *consumer_stage = &stages[next];
+         nir_shader *producer = producer_stage->nir;
+         nir_shader *consumer = consumer_stage->nir;
+
+         const nir_opt_varyings_progress p = nir_opt_varyings(producer, consumer, true, max_ubo_comps, max_ubos);
+         if (p & nir_progress_producer)
+            radv_optimize_nir_algebraic(producer, true, gfx_level >= GFX7);
+         if (p & nir_progress_consumer)
+            radv_optimize_nir_algebraic(consumer, true, gfx_level >= GFX7);
+
+         if (consumer->info.stage == MESA_SHADER_TESS_CTRL ||
+             consumer->info.stage == MESA_SHADER_GEOMETRY)
+            nir_recompute_io_bases(producer, nir_var_shader_out);
+
+         if (consumer->info.stage == MESA_SHADER_TESS_CTRL ||
+             consumer->info.stage == MESA_SHADER_GEOMETRY ||
+             consumer->info.stage == MESA_SHADER_FRAGMENT)
+            nir_recompute_io_bases(consumer, nir_var_shader_in);
+
+         nir_shader_gather_info(producer, nir_shader_get_entrypoint(producer));
+         nir_shader_gather_info(consumer, nir_shader_get_entrypoint(consumer));
+
+         if (producer->xfb_info)
+            nir_gather_xfb_info_from_intrinsics(producer);
+
+         /* Linked shader I/O for VS->TCS, VS->GS, TES->GS.
+          * The correctness of I/O location mapping depends on the fact that
+          * the outputs of the producer exactly match the inputs of the consumer.
+          */
+         if (consumer->info.stage == MESA_SHADER_TESS_CTRL ||
+             consumer->info.stage == MESA_SHADER_GEOMETRY) {
+            assert(producer->info.outputs_written == consumer->info.inputs_read);
+         }
+
+         if (s == MESA_SHADER_VERTEX && next == MESA_SHADER_TESS_CTRL) {
+            const unsigned num_linked_outputs = util_bitcount64(producer->info.outputs_written);
+            producer_stage->info.vs.num_linked_outputs = num_linked_outputs;
+            producer_stage->info.outputs_linked = true;
+            consumer_stage->info.tcs.num_linked_inputs = num_linked_outputs;
+            consumer_stage->info.inputs_linked = true;
+         } else if (s == MESA_SHADER_VERTEX && next == MESA_SHADER_GEOMETRY) {
+            const unsigned num_linked_outputs = util_bitcount64(producer->info.outputs_written);
+            producer_stage->info.vs.num_linked_outputs = num_linked_outputs;
+            producer_stage->info.outputs_linked = true;
+            consumer_stage->info.gs.num_linked_inputs = num_linked_outputs;
+            consumer_stage->info.inputs_linked = true;
+         } else if (s == MESA_SHADER_TESS_CTRL) {
+            assume(next == MESA_SHADER_TESS_EVAL);
+
+            /* Count the number of per-vertex output slots we need to reserve for the TCS and TES. */
+            const uint64_t nir_mask = producer_stage->nir->info.outputs_written & consumer_stage->nir->info.inputs_read &
+                                    ~(VARYING_BIT_TESS_LEVEL_OUTER | VARYING_BIT_TESS_LEVEL_INNER);
+            const uint64_t io_mask = radv_gather_unlinked_io_mask(nir_mask);
+            const unsigned num_reserved_outputs = util_last_bit64(io_mask);
+
+            /* Count the number of per-patch output slots we need to reserve for the TCS and TES.
+             * This is necessary because we need it to determine the patch size in VRAM.
+             */
+            const uint64_t patch_io_mask = radv_gather_unlinked_patch_io_mask(
+               producer_stage->nir->info.outputs_written & consumer_stage->nir->info.inputs_read,
+               producer_stage->nir->info.patch_outputs_written & consumer_stage->nir->info.patch_inputs_read);
+            const unsigned num_reserved_patch_outputs = util_last_bit64(patch_io_mask);
+
+            producer_stage->info.tcs.num_linked_outputs = num_reserved_outputs;
+            producer_stage->info.tcs.num_linked_patch_outputs = num_reserved_patch_outputs;
+            producer_stage->info.outputs_linked = true;
+
+            consumer_stage->info.tes.num_linked_inputs = num_reserved_outputs;
+            consumer_stage->info.tes.num_linked_patch_inputs = num_reserved_patch_outputs;
+            consumer_stage->info.inputs_linked = true;
+         } else if (s == MESA_SHADER_TESS_EVAL && next == MESA_SHADER_GEOMETRY) {
+            const unsigned num_linked_outputs = util_bitcount64(producer->info.outputs_written);
+            producer_stage->info.tes.num_linked_outputs = num_linked_outputs;
+            producer_stage->info.outputs_linked = true;
+            consumer_stage->info.gs.num_linked_inputs = num_linked_outputs;
+            consumer_stage->info.inputs_linked = true;
+         }
+      }
+
+      next = s;
    }
 }
 
@@ -2530,6 +2598,8 @@ radv_graphics_shaders_compile(struct radv_device *device, struct vk_pipeline_cac
       if (!gfx_state->ps.has_epilog)
          radv_nir_remap_color_attachment(stages[MESA_SHADER_FRAGMENT].nir, gfx_state);
    }
+
+   radv_graphics_shaders_link_varyings(device, stages);
 
    radv_fill_shader_info(device, RADV_PIPELINE_GRAPHICS, gfx_state, stages, active_nir_stages);
 

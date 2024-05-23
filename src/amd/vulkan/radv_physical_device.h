@@ -266,4 +266,6 @@ VkResult create_drm_physical_device(struct vk_instance *vk_instance, struct _drm
 
 void radv_physical_device_destroy(struct vk_physical_device *vk_pdev);
 
+size_t radv_max_descriptor_set_size(void);
+
 #endif /* RADV_PHYSICAL_DEVICE_H */

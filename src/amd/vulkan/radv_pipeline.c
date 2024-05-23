@@ -267,6 +267,38 @@ ycbcr_conversion_lookup(const void *data, uint32_t set, uint32_t binding, uint32
    return ycbcr_samplers + array_index;
 }
 
+static bool
+radv_mem_late_vectorize_callback(unsigned align_mul, unsigned align_offset, unsigned bit_size, unsigned num_components,
+                                 nir_intrinsic_instr *low, nir_intrinsic_instr *high, void *data)
+{
+   unsigned bit_sizes[3] = {bit_size, 0, 0};
+   switch (low->intrinsic) {
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_load_buffer_amd:
+      bit_sizes[1] = low->def.bit_size;
+      bit_sizes[2] = high->def.bit_size;
+      break;
+   case nir_intrinsic_store_shared:
+   case nir_intrinsic_store_buffer_amd:
+      bit_sizes[1] = low->src[0].ssa->bit_size;
+      bit_sizes[2] = high->src[0].ssa->bit_size;
+      break;
+   default:
+      /* We are not interested in vectorizing any other intrinsics. */
+      return false;
+   }
+
+   /* We can't re-run nir_shader_gather_info because that breaks GS copy shaders (the shader no longer has IO
+    * intrinsics). Avoid any vectorizations that might require bitwise ops to pack/unpack, since
+    * shader_info::bit_sizes_int can then become out of date. */
+   if (MIN3(bit_sizes[0], bit_sizes[1], bit_sizes[2]) < 16 &&
+       (bit_sizes[0] != bit_sizes[1] || bit_sizes[0] != bit_sizes[2])) {
+      return false;
+   }
+
+   return ac_nir_mem_vectorize_callback(align_mul, align_offset, bit_size, num_components, low, high, data);
+}
+
 static unsigned
 lower_bit_size_callback(const nir_instr *instr, void *_)
 {
@@ -576,6 +608,27 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_graphics_stat
    NIR_PASS_V(stage->nir, ac_nir_lower_intrinsics_to_args, gfx_level, radv_select_hw_stage(&stage->info, gfx_level),
               &stage->args.ac);
    NIR_PASS_V(stage->nir, radv_nir_lower_abi, gfx_level, stage, gfx_state, pdev->info.address32_hi);
+
+   bool vectorizable_vs_inputs = stage->stage == MESA_SHADER_VERTEX && !stage->info.vs.use_per_attribute_vb_descs;
+   if ((io_to_mem || lowered_ngg || vectorizable_vs_inputs) && !stage->key.optimisations_disabled) {
+      NIR_PASS(_, stage->nir, nir_opt_constant_folding);
+      NIR_PASS(_, stage->nir, nir_opt_cse);
+      nir_variable_mode modes = nir_var_mem_shared | nir_var_shader_out | nir_var_mem_task_payload;
+      if (vectorizable_vs_inputs || stage->stage != MESA_SHADER_VERTEX)
+         modes |= nir_var_shader_in;
+      const nir_load_store_vectorize_options late_vectorize_opts = {
+         .modes = modes,
+         .callback = radv_mem_late_vectorize_callback,
+         .cb_data = &gfx_level,
+         .robust_modes = 0,
+         /* On GFX6, read2/write2 is out-of-bounds if the offset register is negative, even if
+          * the final offset is not.
+          */
+         .has_shared2_amd = gfx_level >= GFX7,
+      };
+      NIR_PASS(_, stage->nir, nir_opt_load_store_vectorize, &late_vectorize_opts);
+   }
+
    radv_optimize_nir_algebraic(
       stage->nir, io_to_mem || lowered_ngg || stage->stage == MESA_SHADER_COMPUTE || stage->stage == MESA_SHADER_TASK,
       gfx_level >= GFX7);
