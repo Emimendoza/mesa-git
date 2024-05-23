@@ -611,6 +611,21 @@ static void scan_instruction(const struct nir_shader *nir, struct si_shader_info
       default:
          break;
       }
+   } else if (instr->type == nir_instr_type_alu) {
+      const nir_alu_instr *alu = nir_instr_as_alu(instr);
+      switch (alu->op) {
+         case nir_op_frcp:
+         case nir_op_fsin_amd:
+         case nir_op_fcos_amd:
+         case nir_op_fsqrt:
+         case nir_op_fexp2:
+         case nir_op_flog2:
+         case nir_op_frsq:
+            info->uses_transcendal_op = true;
+            break;
+         default:
+            break;
+      }
    }
 }
 
