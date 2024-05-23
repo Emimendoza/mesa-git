@@ -1625,6 +1625,10 @@ static void si_pm4_emit_dsa(struct si_context *sctx, unsigned index)
       }
       gfx12_end_context_regs();
       radeon_end(); /* don't track context rolls on GFX12 */
+
+      gfx12_opt_push_gfx_sh_reg(R_00B030_SPI_SHADER_USER_DATA_PS_0 + SI_SGPR_ALPHA_REF * 4,
+                                SI_TRACKED_SPI_SHADER_USER_DATA_PS__ALPHA_REF,
+                                state->spi_shader_user_data_ps_alpha_ref);
    } else if (sctx->screen->info.has_set_context_pairs_packed) {
       radeon_begin(&sctx->gfx_cs);
       gfx11_begin_packed_context_regs();
@@ -2615,13 +2619,7 @@ static void si_initialize_color_surface(struct si_context *sctx, struct si_surfa
    bool round_mode = ntype != V_028C70_NUMBER_UNORM && ntype != V_028C70_NUMBER_SNORM &&
                      ntype != V_028C70_NUMBER_SRGB &&
                      format != V_028C70_COLOR_8_24 && format != V_028C70_COLOR_24_8;
-   /* amdvlk: [min-compressed-block-size] should be set to 32 for dGPU and
-    * 64 for APU because all of our APUs to date use DIMMs which have
-    * a request granularity size of 64B while all other chips have a
-    * 32B request size */
-   unsigned min_compressed_block_size = V_028C78_MIN_BLOCK_SIZE_32B;
-   if (!sctx->screen->info.has_dedicated_vram)
-      min_compressed_block_size = V_028C78_MIN_BLOCK_SIZE_64B;
+   unsigned min_compressed_block_size = ac_get_dcc_min_compressed_block_size(&sctx->screen->info);
 
    surf->cb_color_info = S_028C70_COMP_SWAP(swap) |
                          S_028C70_BLEND_CLAMP(blend_clamp) |
@@ -6595,7 +6593,7 @@ static void gfx12_init_gfx_preamble_state(struct si_context *sctx)
    si_pm4_set_reg(pm4, R_00B218_SPI_SHADER_PGM_HI_ES,
                   S_00B324_MEM_BASE(sscreen->info.address32_hi >> 8));
    si_pm4_set_reg_idx3(pm4, R_00B21C_SPI_SHADER_PGM_RSRC3_GS,
-                       ac_apply_cu_en(0xfffffefe, 0, 0, &sscreen->info));
+                       ac_apply_cu_en(0xfffffdfd, 0, 0, &sscreen->info));
    si_pm4_set_reg(pm4, R_00B2C8_SPI_SHADER_USER_ACCUM_ESGS_0, 0);
    si_pm4_set_reg(pm4, R_00B2CC_SPI_SHADER_USER_ACCUM_ESGS_1, 0);
    si_pm4_set_reg(pm4, R_00B2D0_SPI_SHADER_USER_ACCUM_ESGS_2, 0);
