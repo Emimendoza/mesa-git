@@ -209,6 +209,15 @@
     HWCI_KERNEL_MODULES: i915
     RUNNER_TAG: mesa-ci-x86-64-lava-hp-x360-12b-ca0010nr-n4020-octopus
 
+# Status: https://lava.collabora.dev/scheduler/device_type/acer-cbv514-1h-34uz-brya
+.lava-acer-cbv514-1h-34uz-brya:x86_64:
+  variables:
+    DEVICE_TYPE: acer-cbv514-1h-34uz-brya
+    FDO_CI_CONCURRENT: 9
+    GPU_VERSION: iris-adl
+    HWCI_KERNEL_MODULES: i915
+    RUNNER_TAG: mesa-ci-x86-64-lava-acer-cbv514-1h-34uz-brya
+
 # Status: https://lava.collabora.dev/scheduler/device_type/acer-cp514-2h-1130g7-volteer
 .lava-acer-cp514-2h-1130g7-volteer:x86_64:
   variables:
@@ -307,6 +316,11 @@
     HWCI_START_XORG: 1
 
 ## Iris only
+.iris-adl-test:
+  extends:
+    - .iris-test
+    - .lava-acer-cbv514-1h-34uz-brya:x86_64
+
 .iris-apl-test:
   extends:
     - .iris-test
@@ -398,6 +412,13 @@
     GPU_VERSION: intel-cml
 
 ## Intel (anv + iris)
+.intel-adl-test:
+  extends:
+    - .anv-test
+    - .intel-test
+  variables:
+    GPU_VERSION: intel-adl
+
 .intel-tgl-test:
   extends:
     - .anv-test

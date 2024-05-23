@@ -1,0 +1,23 @@
+# initial flakes
+spec@!opengl 1.2@tex3d-maxsize
+spec@arb_gpu_shader_fp64@execution@arb_gpu_shader_fp64-wrong-type-setter
+spec@arb_gpu_shader_fp64@execution@built-in-functions@gs-op-div-dmat4-dmat4
+spec@arb_gpu_shader_fp64@execution@built-in-functions@gs-op-div-double-dmat4
+spec@arb_gpu_shader_fp64@execution@built-in-functions@vs-op-div-dmat4-dmat4
+spec@arb_gpu_shader_fp64@execution@built-in-functions@vs-op-div-double-dmat4
+spec@arb_shader_image_load_store@coherency
+spec@arb_shader_image_load_store@coherency@Vertex-Tessellation control shader/'volatile' qualifier coherency test/256x256
+spec@arb_timer_query@timestamp-get
+spec@egl 1.4@largest possible eglcreatepbuffersurface and then glclear
+spec@egl_chromium_sync_control@conformance
+spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test
+spec@egl_nok_texture_from_pixmap@basic
+spec@glsl-4.00@execution@built-in-functions@fs-op-div-dmat3x4-dmat3x4
+spec@glsl-4.00@execution@built-in-functions@fs-smoothstep-dvec4-dvec4-dvec4
+spec@glsl-4.00@execution@built-in-functions@gs-op-div-dmat4-dmat4
+spec@glsl-4.00@execution@built-in-functions@gs-op-div-double-dmat4
+spec@glsl-4.00@execution@built-in-functions@vs-op-div-dmat4-dmat4
+spec@glsl-4.00@execution@built-in-functions@vs-op-div-double-dmat4
+spec@glsl-4.00@execution@built-in-functions@vs-op-mult-dmat4-dmat4
+spec@glsl-4.20@execution@conversion@frag-conversion-implicit-mat4-dmat4-zero-sign
+

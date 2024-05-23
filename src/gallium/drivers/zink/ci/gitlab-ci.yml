@@ -35,6 +35,29 @@ zink-venus-lvp:
   script:
     - xvfb-run --server-args='-noreset' bash -c "./install/crosvm-runner.sh ./install/deqp-runner.sh"
 
+zink-anv-adl:
+  extends:
+    - .zink-anv-test
+  variables:
+    DEQP_SUITE: zink-anv-adl
+    PIGLIT_NO_WINDOW: 1
+    HWCI_START_WESTON: 1
+    # We use gbm because its a copy of tgl job
+    PIGLIT_PLATFORM: gbm
+  timeout: 30m
+
+# Manual full run when you want to double-check the full status.
+zink-anv-adl-full:
+  extends:
+    - zink-anv-adl
+    - .zink-anv-manual-rules
+  variables:
+    DEQP_SUITE: zink-anv-adl-full
+    JOB_TIMEOUT: 105
+    HWCI_START_WESTON: 1
+  timeout: 2h
+  parallel: 2
+
 zink-anv-tgl:
   extends:
     - .zink-anv-test
